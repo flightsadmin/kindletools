@@ -14,6 +14,24 @@ py .\legal_book_downloader.py --output .\library gutenberg 1342 --format text
 # Create a PDF locally from Gutenberg's plain-text edition
 py .\legal_book_downloader.py --output .\library gutenberg 1342 --format pdf
 
+# Download several Gutenberg books in one command
+py .\legal_book_downloader.py --output .\library gutenberg-batch --format epub 1342 84 11
+
+# Download every Gutenberg book listed in romance_books.json (86 entries)
+# Requests run sequentially with a two-second pause by default.
+py .\legal_book_downloader.py --output .\library json .\romance_books.json --format epub
+
+# Test just the first three entries, with a one-second pause
+py .\legal_book_downloader.py --output .\library json .\romance_books.json --format pdf --limit 3 --delay 1
+
+# Download a public Internet Archive item by its identifier
+# (the identifier is the final part of https://archive.org/details/<identifier>)
+py .\legal_book_downloader.py --output .\library archive pride-and-prejudice-pdf --format pdf
+
+# Download several public Internet Archive items in one command
+# Replace item-one and item-two with identifiers that offer the chosen format.
+py .\legal_book_downloader.py --output .\library archive-batch --format pdf item-one item-two
+
 # Download an openly licensed or personally authorized direct file URL
 py .\legal_book_downloader.py url "https://example.org/book.epub" --authorized
 ```
@@ -21,3 +39,5 @@ py .\legal_book_downloader.py url "https://example.org/book.epub" --authorized
 The `url` command expects a direct file URL, rather than a web page that contains a download button.
 
 Project Gutenberg does not offer PDFs for every title. The `pdf` format therefore downloads its UTF-8 plain-text edition and makes a basic, searchable PDF locally; it does not claim to be a publisher-formatted edition.
+
+The `archive` command checks an item's public metadata, refuses items marked access-restricted, and downloads an available EPUB, PDF, or text file. Availability and reuse rights vary by item; check the item's rights statement and your local law before downloading.

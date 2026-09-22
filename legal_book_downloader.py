@@ -3,10 +3,12 @@
 
 Supported sources:
   * Project Gutenberg by ebook ID
+  * Public, non-restricted Internet Archive items by identifier
   * A direct file URL for which you have permission to download the material
 
 Examples:
   python legal_book_downloader.py gutenberg 1342
+  python legal_book_downloader.py archive pride-and-prejudice-pdf --format pdf
   python legal_book_downloader.py url https://example.org/book.epub --authorized
 """
 
@@ -17,6 +19,7 @@ import json
 import re
 import sys
 import textwrap
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
@@ -157,6 +160,38 @@ def plain_text_to_pdf(text_path: Path, output: Path, title: str) -> Path:
     return output
 
 
+def convert_gutenberg_pdf(text_file: Path, book_id: int) -> Path:
+    """Convert a temporary Gutenberg text download to a non-overwriting PDF."""
+    pdf_path = text_file.with_suffix(".pdf")
+    if pdf_path.exists():
+        stem, suffix = pdf_path.stem, pdf_path.suffix
+        index = 2
+        while pdf_path.exists():
+            pdf_path = pdf_path.with_name(f"{stem}-{index}{suffix}")
+            index += 1
+    plain_text_to_pdf(text_file, pdf_path, f"Project Gutenberg ebook {book_id}")
+    text_file.unlink()
+    return pdf_path
+
+
+def download_gutenberg(book_id: int, fmt: str, destination: Path) -> Path:
+    """Download one Gutenberg ebook, converting plain text when PDF is requested."""
+    result = download(gutenberg_url(book_id, fmt), destination,
+                      f"gutenberg-{book_id}{'.epub' if fmt == 'epub' else '.txt'}")
+    return convert_gutenberg_pdf(result, book_id) if fmt == "pdf" else result
+
+
+def load_book_list(path: Path) -> list[dict]:
+    """Load a JSON array containing Gutenberg entries with an integer `id` field."""
+    try:
+        contents = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Could not read JSON book list: {error}") from error
+    if not isinstance(contents, list):
+        raise RuntimeError("The JSON book list must contain an array of book objects.")
+    return contents
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("books"), help="download folder (default: books)")
@@ -167,15 +202,94 @@ def main() -> int:
     gutenberg.add_argument("--format", choices=("epub", "kindle", "text", "pdf"), default="epub",
                            help="PDF is generated locally from Gutenberg's plain-text edition")
 
+    gutenberg_batch = commands.add_parser("gutenberg-batch", help="download several Project Gutenberg ebooks")
+    gutenberg_batch.add_argument("ids", type=int, nargs="+", help="one or more Project Gutenberg ebook IDs")
+    gutenberg_batch.add_argument("--format", choices=("epub", "kindle", "text", "pdf"), default="epub",
+                                 help="PDF is generated locally from Gutenberg's plain-text edition")
+
+    json_list = commands.add_parser("json", help="download all Gutenberg books listed in a JSON file")
+    json_list.add_argument("path", type=Path, help="JSON array of objects containing at least an id field")
+    json_list.add_argument("--format", choices=("epub", "kindle", "text", "pdf"), default="epub")
+    json_list.add_argument("--delay", type=float, default=2.0,
+                           help="seconds to wait between requests (default: 2)")
+    json_list.add_argument("--limit", type=int, help="download only the first N valid entries")
+
     archive = commands.add_parser("archive", help="download a public, non-restricted Internet Archive item")
     archive.add_argument("identifier", help="Internet Archive identifier from its item URL")
     archive.add_argument("--format", choices=("epub", "pdf", "text"), default="epub")
+
+    archive_batch = commands.add_parser("archive-batch", help="download several public Internet Archive items")
+    archive_batch.add_argument("identifiers", nargs="+", help="one or more Internet Archive item identifiers")
+    archive_batch.add_argument("--format", choices=("epub", "pdf", "text"), default="epub")
 
     direct = commands.add_parser("url", help="download a file from a URL you are authorized to access")
     direct.add_argument("url", help="direct book-file URL (not a catalogue or landing page)")
     direct.add_argument("--authorized", action="store_true", help="confirm you have permission or a valid license")
 
     args = parser.parse_args()
+    if args.source == "gutenberg-batch":
+        failures = 0
+        for book_id in args.ids:
+            try:
+                result = download_gutenberg(book_id, args.format, args.output)
+                print(f"Saved: {result.resolve()}")
+            except RuntimeError as error:
+                failures += 1
+                print(f"Gutenberg {book_id}: {error}", file=sys.stderr)
+        return 1 if failures else 0
+    if args.source == "json":
+        if args.delay < 0:
+            parser.error("--delay must be zero or greater.")
+        if args.limit is not None and args.limit < 1:
+            parser.error("--limit must be at least 1.")
+        try:
+            entries = load_book_list(args.path)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        failures = 0
+        successes = 0
+        processed = 0
+        for entry in entries:
+            if args.limit is not None and processed >= args.limit:
+                break
+            if not isinstance(entry, dict):
+                failures += 1
+                print("Skipped invalid JSON entry (expected an object).", file=sys.stderr)
+                continue
+            try:
+                book_id = int(entry["id"])
+                if book_id < 1:
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                failures += 1
+                print(f"Skipped entry without a valid positive id: {entry!r}", file=sys.stderr)
+                continue
+            processed += 1
+            title = entry.get("title", f"Gutenberg {book_id}")
+            print(f"[{processed}] {title} (#{book_id})")
+            try:
+                result = download_gutenberg(book_id, args.format, args.output)
+                successes += 1
+                print(f"Saved: {result.resolve()}")
+            except RuntimeError as error:
+                failures += 1
+                print(f"Gutenberg {book_id}: {error}", file=sys.stderr)
+            if processed < len(entries) and (args.limit is None or processed < args.limit):
+                time.sleep(args.delay)
+        print(f"Finished: {successes} downloaded, {failures} failed or skipped.")
+        return 1 if failures else 0
+    if args.source == "archive-batch":
+        failures = 0
+        for identifier in args.identifiers:
+            try:
+                url, fallback = archive_file(identifier, args.format)
+                result = download(url, args.output, fallback)
+                print(f"Saved: {result.resolve()}")
+            except RuntimeError as error:
+                failures += 1
+                print(f"Internet Archive {identifier}: {error}", file=sys.stderr)
+        return 1 if failures else 0
     if args.source == "gutenberg":
         url = gutenberg_url(args.id, args.format)
         fallback = f"gutenberg-{args.id}{'.epub' if args.format == 'epub' else '.txt'}"
@@ -193,16 +307,7 @@ def main() -> int:
     try:
         result = download(url, args.output, fallback)
         if args.source == "gutenberg" and args.format == "pdf":
-            pdf_path = result.with_suffix(".pdf")
-            if pdf_path.exists():
-                stem, suffix = pdf_path.stem, pdf_path.suffix
-                index = 2
-                while pdf_path.exists():
-                    pdf_path = pdf_path.with_name(f"{stem}-{index}{suffix}")
-                    index += 1
-            plain_text_to_pdf(result, pdf_path, f"Project Gutenberg ebook {args.id}")
-            result.unlink()
-            result = pdf_path
+            result = convert_gutenberg_pdf(result, args.id)
     except RuntimeError as error:
         print(error, file=sys.stderr)
         return 1
