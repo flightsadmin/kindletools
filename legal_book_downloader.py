@@ -17,10 +17,12 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
 import textwrap
 import time
 from pathlib import Path
+from typing import Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
@@ -182,7 +184,7 @@ def download_gutenberg(book_id: int, fmt: str, destination: Path) -> Path:
 
 
 def load_book_list(path: Path) -> list[dict]:
-    """Load a JSON array containing Gutenberg entries with an integer `id` field."""
+    """Load a JSON array of Gutenberg or Internet Archive book entries."""
     try:
         contents = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as error:
@@ -192,9 +194,65 @@ def load_book_list(path: Path) -> list[dict]:
     return contents
 
 
+def kindle_documents_folder(value: str) -> Path:
+    """Return a Kindle documents folder from an explicit path or Windows USB detection."""
+    if value != "auto":
+        if value.lower().startswith("this pc\\"):
+            raise RuntimeError("'This PC\\…' is a File Explorer display path, not a filesystem path. Use --kindle for auto-detection or a drive path such as E:\\documents.")
+        folder = Path(value)
+        if not folder.is_dir():
+            raise RuntimeError(f"Kindle documents folder does not exist: {folder}")
+        return folder
+    if sys.platform != "win32":
+        raise RuntimeError("Automatic Kindle detection is available on Windows only; pass --kindle <documents-folder>.")
+
+    import ctypes
+    drives = ctypes.windll.kernel32.GetLogicalDrives()
+    candidates = []
+    for index in range(26):
+        if not drives & (1 << index):
+            continue
+        root = f"{chr(ord('A') + index)}:\\"
+        label = ctypes.create_unicode_buffer(261)
+        if ctypes.windll.kernel32.GetVolumeInformationW(root, label, len(label), None, None, None, None, 0):
+            documents = Path(root) / "documents"
+            if label.value.lower().startswith("kindle") and documents.is_dir():
+                candidates.append(documents)
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise RuntimeError("No Kindle drive was detected. Connect and unlock it, or pass --kindle E:\\documents.")
+    raise RuntimeError("More than one Kindle drive was detected; pass --kindle <documents-folder>.")
+
+
+def copy_to_kindle(book: Path, documents: Path) -> Path:
+    """Copy a supported personal document to Kindle without overwriting existing files."""
+    supported = {".epub", ".pdf", ".txt", ".mobi", ".azw", ".azw3"}
+    if book.suffix.lower() not in supported:
+        raise RuntimeError(f"{book.name} is not a supported Kindle transfer format.")
+    target = documents / book.name
+    if target.exists():
+        stem, suffix = target.stem, target.suffix
+        index = 2
+        while target.exists():
+            target = documents / f"{stem}-{index}{suffix}"
+            index += 1
+    shutil.copy2(book, target)
+    return target
+
+
+def show_saved(book: Path, kindle_documents: Optional[Path]) -> None:
+    print(f"Saved: {book.resolve()}")
+    if kindle_documents is not None:
+        kindle_file = copy_to_kindle(book, kindle_documents)
+        print(f"Copied to Kindle: {kindle_file}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("books"), help="download folder (default: books)")
+    parser.add_argument("--kindle", nargs="?", const="auto", metavar="DOCUMENTS_FOLDER",
+                        help="copy completed files to a Kindle (auto-detect, or give its documents folder)")
     commands = parser.add_subparsers(dest="source", required=True)
 
     gutenberg = commands.add_parser("gutenberg", help="download a public-domain Project Gutenberg ebook")
@@ -207,8 +265,8 @@ def main() -> int:
     gutenberg_batch.add_argument("--format", choices=("epub", "kindle", "text", "pdf"), default="epub",
                                  help="PDF is generated locally from Gutenberg's plain-text edition")
 
-    json_list = commands.add_parser("json", help="download all Gutenberg books listed in a JSON file")
-    json_list.add_argument("path", type=Path, help="JSON array of objects containing at least an id field")
+    json_list = commands.add_parser("json", help="download all Gutenberg or Internet Archive books in a JSON file")
+    json_list.add_argument("path", type=Path, help="JSON array with Gutenberg id or Archive identifier fields")
     json_list.add_argument("--format", choices=("epub", "kindle", "text", "pdf"), default="epub")
     json_list.add_argument("--delay", type=float, default=2.0,
                            help="seconds to wait between requests (default: 2)")
@@ -227,12 +285,17 @@ def main() -> int:
     direct.add_argument("--authorized", action="store_true", help="confirm you have permission or a valid license")
 
     args = parser.parse_args()
+    try:
+        kindle_documents = kindle_documents_folder(args.kindle) if args.kindle is not None else None
+    except RuntimeError as error:
+        print(error, file=sys.stderr)
+        return 1
     if args.source == "gutenberg-batch":
         failures = 0
         for book_id in args.ids:
             try:
                 result = download_gutenberg(book_id, args.format, args.output)
-                print(f"Saved: {result.resolve()}")
+                show_saved(result, kindle_documents)
             except RuntimeError as error:
                 failures += 1
                 print(f"Gutenberg {book_id}: {error}", file=sys.stderr)
@@ -257,24 +320,47 @@ def main() -> int:
                 failures += 1
                 print("Skipped invalid JSON entry (expected an object).", file=sys.stderr)
                 continue
-            try:
-                book_id = int(entry["id"])
-                if book_id < 1:
-                    raise ValueError
-            except (KeyError, TypeError, ValueError):
+            source = str(entry.get("source", "gutenberg")).lower()
+            if source not in ("gutenberg", "archive"):
                 failures += 1
-                print(f"Skipped entry without a valid positive id: {entry!r}", file=sys.stderr)
+                print(f"Skipped entry with an unsupported source: {entry!r}", file=sys.stderr)
                 continue
+            if source == "gutenberg":
+                try:
+                    book_id = int(entry["id"])
+                    if book_id < 1:
+                        raise ValueError
+                except (KeyError, TypeError, ValueError):
+                    failures += 1
+                    print(f"Skipped entry without a valid positive Gutenberg id: {entry!r}", file=sys.stderr)
+                    continue
+                reference = f"#{book_id}"
+            else:
+                identifier = entry.get("identifier")
+                if not isinstance(identifier, str) or not identifier.strip():
+                    failures += 1
+                    print(f"Skipped entry without a valid Archive identifier: {entry!r}", file=sys.stderr)
+                    continue
+                identifier = identifier.strip()
+                reference = identifier
+                if args.format == "kindle":
+                    failures += 1
+                    print(f"Internet Archive {identifier}: Kindle is not supported for Archive JSON entries.", file=sys.stderr)
+                    continue
             processed += 1
-            title = entry.get("title", f"Gutenberg {book_id}")
-            print(f"[{processed}] {title} (#{book_id})")
+            title = entry.get("title", f"{source.title()} {reference}")
+            print(f"[{processed}] {title} ({reference})")
             try:
-                result = download_gutenberg(book_id, args.format, args.output)
+                if source == "gutenberg":
+                    result = download_gutenberg(book_id, args.format, args.output)
+                else:
+                    url, fallback = archive_file(identifier, args.format)
+                    result = download(url, args.output, fallback)
+                show_saved(result, kindle_documents)
                 successes += 1
-                print(f"Saved: {result.resolve()}")
             except RuntimeError as error:
                 failures += 1
-                print(f"Gutenberg {book_id}: {error}", file=sys.stderr)
+                print(f"{source.title()} {reference}: {error}", file=sys.stderr)
             if processed < len(entries) and (args.limit is None or processed < args.limit):
                 time.sleep(args.delay)
         print(f"Finished: {successes} downloaded, {failures} failed or skipped.")
@@ -285,7 +371,7 @@ def main() -> int:
             try:
                 url, fallback = archive_file(identifier, args.format)
                 result = download(url, args.output, fallback)
-                print(f"Saved: {result.resolve()}")
+                show_saved(result, kindle_documents)
             except RuntimeError as error:
                 failures += 1
                 print(f"Internet Archive {identifier}: {error}", file=sys.stderr)
@@ -311,7 +397,7 @@ def main() -> int:
     except RuntimeError as error:
         print(error, file=sys.stderr)
         return 1
-    print(f"Saved: {result.resolve()}")
+    show_saved(result, kindle_documents)
     return 0
 
 

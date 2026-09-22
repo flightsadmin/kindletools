@@ -4,6 +4,8 @@
 
 Requires Python 3.9+ and uses only the standard library.
 
+A matching Node.js 18+ implementation is available in `legal_book_downloader.js`. Replace `py .\legal_book_downloader.py` in the examples below with `node .\legal_book_downloader.js`; it uses the same commands, JSON manifests, formats, delays, and Kindle option.
+
 ```powershell
 # Download Project Gutenberg ebook 1342 (Pride and Prejudice) as EPUB
 py .\legal_book_downloader.py gutenberg 1342
@@ -20,6 +22,18 @@ py .\legal_book_downloader.py --output .\library gutenberg-batch --format epub 1
 # Download every Gutenberg book listed in romance_books.json (86 entries)
 # Requests run sequentially with a two-second pause by default.
 py .\legal_book_downloader.py --output .\library json .\romance_books.json --format epub
+
+# With a connected Kindle, copy each completed book into its documents folder
+py .\legal_book_downloader.py --kindle --output .\library json .\romance_books.json --format epub
+
+# Or specify the Kindle documents folder if automatic detection does not find it
+py .\legal_book_downloader.py --kindle E:\documents --output .\library gutenberg 1342 --format epub
+
+# Do not use File Explorer's "This PC\Kindle …" display path. Use --kindle on its
+# own, or replace E: above with the Kindle's actual Windows drive letter.
+
+# Download each public Internet Archive item listed in archive_books.json
+py .\legal_book_downloader.py --output .\library json .\archive_books.json --format pdf
 
 # Test just the first three entries, with a one-second pause
 py .\legal_book_downloader.py --output .\library json .\romance_books.json --format pdf --limit 3 --delay 1
