@@ -14,7 +14,7 @@ const { pipeline } = require('node:stream/promises');
 const { execFileSync } = require('node:child_process');
 
 const USER_AGENT = 'LegalBookDownloader/1.0 (personal lawful-use downloader)';
-const FORMATS = new Set(['epub', 'kindle', 'text', 'pdf']);
+const FORMATS = new Set(['epub', 'kindle', 'text', 'pdf', 'mobi']);
 
 function usage(message, exitCode = 2) {
   if (message) console.error(`Error: ${message}\n`);
@@ -23,6 +23,7 @@ function usage(message, exitCode = 2) {
   node legal_book_downloader.js [--output FOLDER] [--kindle [DOCUMENTS_FOLDER]] gutenberg-batch ID... [--format FORMAT]
   node legal_book_downloader.js [--output FOLDER] [--kindle [DOCUMENTS_FOLDER]] archive IDENTIFIER [--format epub|pdf|text]
   node legal_book_downloader.js [--output FOLDER] [--kindle [DOCUMENTS_FOLDER]] archive-batch IDENTIFIER... [--format FORMAT]
+  node legal_book_downloader.js [--output FOLDER] [--kindle [DOCUMENTS_FOLDER]] alice CATALOG_URL [--format epub|pdf|mobi] [--delay SECONDS] [--limit N]
   node legal_book_downloader.js [--output FOLDER] [--kindle [DOCUMENTS_FOLDER]] json FILE [--format FORMAT] [--delay SECONDS] [--limit N]
   node legal_book_downloader.js [--output FOLDER] [--kindle [DOCUMENTS_FOLDER]] url URL --authorized`);
   process.exitCode = exitCode;
@@ -36,7 +37,7 @@ function parseArgs(argv) {
     if (arg === '--output') options.output = argv[++index];
     else if (arg === '--kindle') {
       const next = argv[index + 1];
-      const sources = new Set(['gutenberg', 'gutenberg-batch', 'archive', 'archive-batch', 'json', 'url']);
+      const sources = new Set(['gutenberg', 'gutenberg-batch', 'archive', 'archive-batch', 'alice', 'json', 'url']);
       options.kindle = next && !next.startsWith('--') && !sources.has(next) ? argv[++index] : 'auto';
     } else if (arg === '--format') options.format = argv[++index];
     else if (arg === '--delay') options.delay = Number(argv[++index]);
@@ -84,6 +85,7 @@ async function download(url, outputFolder, fallback) {
 
 function gutenbergUrl(id, format) {
   const suffixes = { epub: '.epub', kindle: '.kindle.images', text: '.txt.utf-8', pdf: '.txt.utf-8' };
+  if (!suffixes[format]) throw new Error(`Gutenberg does not support the ${format.toUpperCase()} option.`);
   return `https://www.gutenberg.org/ebooks/${id}${suffixes[format]}`;
 }
 
@@ -125,7 +127,7 @@ async function downloadGutenberg(id, format, output) {
 }
 
 async function archiveFile(identifier, format) {
-  if (format === 'kindle') throw new Error('Kindle is not supported for Internet Archive entries.');
+  if (!['epub', 'pdf', 'text'].includes(format)) throw new Error(`Internet Archive does not support the ${format.toUpperCase()} option.`);
   const response = await fetch(`https://archive.org/metadata/${encodeURIComponent(identifier)}`, { headers: { 'User-Agent': USER_AGENT } });
   if (!response.ok) throw new Error(`Could not read Internet Archive item metadata: HTTP ${response.status}`);
   const record = await response.json();
@@ -166,6 +168,40 @@ async function saveAndReport(book, kindle) {
   if (kindle) console.log(`Copied to Kindle: ${await copyToKindle(book, kindle)}`);
 }
 
+function decodeHtml(value) {
+  return value.replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
+    .replace(/&quot;/gi, '"').replace(/&#039;/gi, "'").replace(/&amp;/gi, '&');
+}
+
+async function fetchHtml(url) {
+  const response = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
+  if (!response.ok) throw new Error(`Could not open ${url}: HTTP ${response.status}`);
+  return response.text();
+}
+
+async function aliceBookPages(catalogUrl) {
+  const html = await fetchHtml(catalogUrl);
+  const links = new Set();
+  const pattern = /<a\b[^>]*\bhref="([^"]*\/book\/(?!download-link\/|vote-quote\/)[^"]*)"[^>]*>/gi;
+  for (const match of html.matchAll(pattern)) links.add(new URL(decodeHtml(match[1]), catalogUrl).href);
+  if (!links.size) throw new Error('No AliceAndBooks book pages were found. Use a catalogue page such as https://www.aliceandbooks.com/books/a.');
+  return [...links];
+}
+
+async function aliceDownload(bookUrl, format, output) {
+  if (!['epub', 'pdf', 'mobi'].includes(format)) throw new Error(`AliceAndBooks does not support the ${format.toUpperCase()} option.`);
+  const html = await fetchHtml(bookUrl);
+  const desired = format.toUpperCase();
+  const pattern = new RegExp(`<a\\b(?=[^>]*\\bdata-format="${desired}")(?=[^>]*\\bhref="([^"]*\\/book\\/download-link\\/[^\"]+)")[^>]*>`, 'gi');
+  const match = pattern.exec(html);
+  if (!match) throw new Error(`No ${desired} download was found for ${bookUrl}.`);
+  const titleMatch = /\bdata-book="([^"]+)"/i.exec(match[0]);
+  const url = new URL(decodeHtml(match[1]), bookUrl).href;
+  const fallback = `alice-and-books.${format}`;
+  return { file: await download(url, output, fallback), title: titleMatch ? decodeHtml(titleMatch[1]) : bookUrl };
+}
+
 async function main() {
   const { options, source, positional } = parseArgs(process.argv.slice(2));
   if (source === '--help' || source === '-h') return usage(null, 0);
@@ -182,6 +218,11 @@ async function main() {
   else if (source === 'gutenberg-batch') entries = positional.map(id => ({ source: 'gutenberg', id }));
   else if (source === 'archive') entries = [{ source: 'archive', identifier: positional[0] }];
   else if (source === 'archive-batch') entries = positional.map(identifier => ({ source: 'archive', identifier }));
+  else if (source === 'alice') {
+    if (!positional[0]) return usage('alice requires an AliceAndBooks catalogue URL.');
+    try { entries = (await aliceBookPages(positional[0])).map(bookUrl => ({ source: 'alice', bookUrl })); }
+    catch (error) { console.error(error.message); process.exitCode = 1; return; }
+  }
   else if (source === 'url') { if (!options.authorized || !positional[0]) return usage('url requires a URL and --authorized.'); entries = [{ source: 'url', url: positional[0] }]; }
   else if (source === 'json') {
     if (!positional[0]) return usage('json requires a manifest filename.');
@@ -195,10 +236,16 @@ async function main() {
       const entrySource = String(entry.source || 'gutenberg').toLowerCase();
       if (entrySource === 'gutenberg') { const id = Number(entry.id); if (!Number.isInteger(id) || id < 1) throw new Error('invalid Gutenberg id'); await oneGutenberg(id, entry.title); }
       else if (entrySource === 'archive') { if (!entry.identifier) throw new Error('invalid Archive identifier'); await oneArchive(String(entry.identifier), entry.title); }
+      else if (entrySource === 'alice') {
+        if (!entry.bookUrl) throw new Error('invalid AliceAndBooks book URL');
+        const result = await aliceDownload(entry.bookUrl, format, options.output);
+        console.log(`${result.title} (AliceAndBooks)`);
+        await saveAndReport(result.file, kindle);
+      }
       else if (entrySource === 'url') { if (!entry.url) throw new Error('invalid authorized URL'); const file = await download(entry.url, options.output, 'authorized-book'); await saveAndReport(file, kindle); }
       else throw new Error(`unsupported source '${entrySource}'`);
     } catch (error) { failures += 1; console.error(`Entry ${index + 1}: ${error.message}`); }
-    if (index < entries.length - 1 && (source === 'json' || source.endsWith('-batch'))) await new Promise(resolve => setTimeout(resolve, options.delay * 1000));
+    if (index < entries.length - 1 && (source === 'json' || source === 'alice' || source.endsWith('-batch'))) await new Promise(resolve => setTimeout(resolve, options.delay * 1000));
   }
   console.log(`Finished: ${entries.length - failures} downloaded, ${failures} failed.`);
   process.exitCode = failures ? 1 : 0;

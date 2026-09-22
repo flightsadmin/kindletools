@@ -46,6 +46,9 @@ py .\legal_book_downloader.py --output .\library archive pride-and-prejudice-pdf
 # Replace item-one and item-two with identifiers that offer the chosen format.
 py .\legal_book_downloader.py --output .\library archive-batch --format pdf item-one item-two
 
+# Node.js only: download all books on an AliceAndBooks catalogue page sequentially
+node .\legal_book_downloader.js --output .\library alice https://www.aliceandbooks.com/books/a --format epub
+
 # Download an openly licensed or personally authorized direct file URL
 py .\legal_book_downloader.py url "https://example.org/book.epub" --authorized
 ```
