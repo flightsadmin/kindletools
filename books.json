@@ -1,0 +1,14 @@
+[
+  {
+    "title": "Book One",
+    "author": "Author Name",
+    "url": "https://example.com/book-one.epub",
+    "format": "epub"
+  },
+  {
+    "title": "Book Two",
+    "author": "Another Author",
+    "url": "https://example.com/book-two.pdf",
+    "format": "pdf"
+  }
+]
