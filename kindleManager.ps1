@@ -2,11 +2,8 @@
 <#
 .SYNOPSIS
 Download books and manage a Kindle from one standalone script.
-.EXAMPLE
 .\kindleManager.ps1
-.EXAMPLE
 .\kindleManager.ps1 -Mode Transfer
-.EXAMPLE
 .\kindleManager.ps1 -Source standard -Format epub -Limit 3
 #>
 [CmdletBinding()]
@@ -27,7 +24,7 @@ param(
 
     [string]$KindlePath,
 
-    [ValidateSet('epub', 'pdf', 'mobi', 'kindle')]
+    [ValidateSet('pdf', 'epub', 'mobi', 'kindle')]
     [string]$Format = 'pdf',
 
     [int]$Delay = 1000,
