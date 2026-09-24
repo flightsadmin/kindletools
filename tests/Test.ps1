@@ -2,7 +2,7 @@
 # Offline regression checks. No Kindle, network, or external test framework required.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$scriptPath = Join-Path $root 'kindleManager.ps1'
+$scriptPath = Join-Path $root 'KindleManager.ps1'
 $tokens = $null
 $errors = $null
 $null = [Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
@@ -102,7 +102,7 @@ try {
 
     Push-Location ([IO.Path]::GetTempPath())
     try {
-        & (Join-Path $root 'kindleManager.ps1') -Help
+        & (Join-Path $root 'KindleManager.ps1') -Help
     } finally { Pop-Location }
     Write-Host 'All offline Kindle Manager checks passed.' -ForegroundColor Green
 } finally {

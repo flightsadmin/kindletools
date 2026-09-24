@@ -2,9 +2,9 @@
 <#
 .SYNOPSIS
 Download books and manage a Kindle from one self-contained script.
-.\kindleManager.ps1
-.\kindleManager.ps1 -Mode Transfer
-.\kindleManager.ps1 -Source standard -Format epub -Limit 3
+.\KindleManager.ps1
+.\KindleManager.ps1 -Mode Transfer
+.\KindleManager.ps1 -Source standard -Format epub -Limit 3
 #>
 [CmdletBinding()]
 param(
@@ -251,7 +251,7 @@ function Test-HttpUrl([string]$Value) {
 function Show-Help {
     @"
 
-kindleManager.ps1
+KindleManager.ps1
 Portable legal/authorized book downloader (PowerShell).
 
 SOURCES
@@ -280,13 +280,13 @@ OPTIONS
   -Help                  Show this help
 
 EXAMPLES
-  .\kindleManager.ps1
-  .\kindleManager.ps1 -Interactive
-  .\kindleManager.ps1 -Source standard -Limit 10
-  .\kindleManager.ps1 -Url "https://example.com/book.epub"
-  .\kindleManager.ps1 -Manifest books.json
-  .\kindleManager.ps1 -Source standard -Format mobi -Kindle
-  .\kindleManager.ps1 -DryRun -Source standard -Limit 3
+  .\KindleManager.ps1
+  .\KindleManager.ps1 -Interactive
+  .\KindleManager.ps1 -Source standard -Limit 10
+  .\KindleManager.ps1 -Url "https://example.com/book.epub"
+  .\KindleManager.ps1 -Manifest books.json
+  .\KindleManager.ps1 -Source standard -Format mobi -Kindle
+  .\KindleManager.ps1 -DryRun -Source standard -Limit 3
 
 "@ | Write-Host
 }
@@ -3832,7 +3832,7 @@ function Invoke-KindleTests {
     $testFolder = Join-Path $script:ProjectRoot 'tests'
     $testFiles = @(Get-ChildItem -LiteralPath $testFolder -Filter 'Test*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name)
     if ($testFiles.Count -eq 0) {
-        Write-ErrMsg "No test scripts found in $testFolder. Keep the tests folder beside kindleManager.ps1 to use this option."
+        Write-ErrMsg "No test scripts found in $testFolder. Keep the tests folder beside KindleManager.ps1 to use this option."
         return $false
     }
 

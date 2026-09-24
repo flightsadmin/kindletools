@@ -1,6 +1,6 @@
 # Kindle Manager
 
-`kindleManager.ps1` downloads books and manages a connected Kindle from one self-contained PowerShell script. It includes colored prompts, file browsing, transfers, search, backups, and storage information.
+`KindleManager.ps1` downloads books and manages a connected Kindle from one self-contained PowerShell script. It includes colored prompts, file browsing, transfers, search, backups, and storage information.
 
 ## Requirements
 
@@ -15,10 +15,10 @@ No separate modules or package installation are required.
 Open PowerShell in the folder containing the script:
 
 ```powershell
-.\kindleManager.ps1
+.\KindleManager.ps1
 
 # Or launch explicitly using Windows PowerShell
-powershell -NoProfile -File .\kindleManager.ps1
+powershell -NoProfile -File .\KindleManager.ps1
 ```
 
 The main menu contains:
@@ -80,7 +80,7 @@ Transfers copy files as they are; they do not convert formats or guarantee that 
 
 ```text
 KindleTools/
-  kindleManager.ps1
+  KindleManager.ps1
   books/                 Default download and PC transfer folder
   backup/                Timestamped Kindle backups
 ```
@@ -91,44 +91,44 @@ Folders are created when needed. Relative download, manifest, and Kindle paths a
 
 ```powershell
 # Show help
-.\kindleManager.ps1 -Help
+.\KindleManager.ps1 -Help
 
 # Open either workflow directly
-.\kindleManager.ps1 -Mode Download
-.\kindleManager.ps1 -Mode Transfer
+.\KindleManager.ps1 -Mode Download
+.\KindleManager.ps1 -Mode Transfer
 
 # Run all offline test scripts
-.\kindleManager.ps1 -Mode Test
+.\KindleManager.ps1 -Mode Test
 
 # Download three EPUBs from Standard Ebooks
-.\kindleManager.ps1 -Source standard -Format epub -Limit 3
+.\KindleManager.ps1 -Source standard -Format epub -Limit 3
 
 # Check Standard Ebooks without saving files
-.\kindleManager.ps1 -Source standard -Format epub -DryRun
+.\KindleManager.ps1 -Source standard -Format epub -DryRun
 
 # Download up to five PDFs from AliceAndBooks where available
-.\kindleManager.ps1 -Source alice -Format pdf -Limit 5
+.\KindleManager.ps1 -Source alice -Format pdf -Limit 5
 
 # Find Pride and Prejudice on Gutenberg and download one EPUB
-.\kindleManager.ps1 -Source gutenberg -Search 'Pride and Prejudice' -Format epub -Limit 1
+.\KindleManager.ps1 -Source gutenberg -Search 'Pride and Prejudice' -Format epub -Limit 1
 
 # Find a PDF edition on Global Grey
-.\kindleManager.ps1 -Source globalgrey -Search 'Pride and Prejudice' -Format pdf -Limit 1
+.\KindleManager.ps1 -Source globalgrey -Search 'Pride and Prejudice' -Format pdf -Limit 1
 
 # Check Global Grey EPUB links without saving books
-.\kindleManager.ps1 -Source globalgrey -Format epub -Limit 3 -DryRun
+.\KindleManager.ps1 -Source globalgrey -Format epub -Limit 3 -DryRun
 
 # Download a direct file URL (replace this placeholder with your book URL)
-.\kindleManager.ps1 -Url 'https://example.org/book.epub' -Format epub
+.\KindleManager.ps1 -Url 'https://example.org/book.epub' -Format epub
 
 # Download all entries in a manifest to a different folder
-.\kindleManager.ps1 -Manifest .\books.json -Output .\library -Limit 0
+.\KindleManager.ps1 -Manifest .\books.json -Output .\library -Limit 0
 
 # Use three attempts per book and a two-second delay between books
-.\kindleManager.ps1 -Source standard -Format epub -Retries 3 -Delay 2000
+.\KindleManager.ps1 -Source standard -Format epub -Retries 3 -Delay 2000
 
 # Copy downloads automatically to a Kindle with a drive letter
-.\kindleManager.ps1 -Source standard -Format kindle -Kindle -KindlePath 'E:\documents'
+.\KindleManager.ps1 -Source standard -Format kindle -Kindle -KindlePath 'E:\documents'
 ```
 
 Automatic copying during downloads (`-Kindle`) uses a filesystem path or a detected Kindle drive letter. It does not support the File Explorer display path `This PC\Kindle\Internal Storage`. For an MTP Kindle without a drive letter, download the books first, then use **Manage Kindle → Send books to Kindle**.
@@ -181,12 +181,12 @@ A top-level array or a single book object is also accepted. Each entry needs an 
 
 ## Script organization
 
-Choose **Run tests** or run `powershell -NoProfile -File .\kindleManager.ps1 -Mode Test` to execute the `Test*.ps1` files in the `tests` folder beside the script. Each suite runs in its own PowerShell process and reports PASS or FAIL, followed by a total. Command-line test mode returns exit code `1` if any suite fails or no tests are found. The current suites use mocked network/device operations and need no connected Kindle. The optional `tests` folder is required only for this feature.
+Choose **Run tests** or run `powershell -NoProfile -File .\KindleManager.ps1 -Mode Test` to execute the `Test*.ps1` files in the `tests` folder beside the script. Each suite runs in its own PowerShell process and reports PASS or FAIL, followed by a total. Command-line test mode returns exit code `1` if any suite fails or no tests are found. The current suites use mocked network/device operations and need no connected Kindle. The optional `tests` folder is required only for this feature.
 
-All implementation code stays in `kindleManager.ps1`, arranged in collapsible `#region` sections for configuration, shared helpers, downloads, Kindle operations, and menu routing. Shared functions avoid duplicate implementations. Manage Kindle labels and actions are defined together in `$ManageActions`.
+All implementation code stays in `KindleManager.ps1`, arranged in collapsible `#region` sections for configuration, shared helpers, downloads, Kindle operations, and menu routing. Shared functions avoid duplicate implementations. Manage Kindle labels and actions are defined together in `$ManageActions`.
 
 Dot-source the script to load its functions without opening a menu:
 
 ```powershell
-. .\kindleManager.ps1
+. .\KindleManager.ps1
 ```

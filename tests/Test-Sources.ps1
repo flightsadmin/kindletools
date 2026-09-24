@@ -1,6 +1,6 @@
 #requires -Version 5.1
 $ErrorActionPreference = 'Stop'
-. (Join-Path (Split-Path $PSScriptRoot -Parent) 'kindleManager.ps1')
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'KindleManager.ps1')
 function Start-Sleep { param($Milliseconds, $Seconds) }
 function Invoke-BookWebRequest {
     param($Uri, $TimeoutMs, $Accept)
