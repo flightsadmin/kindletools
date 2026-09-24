@@ -1,16 +1,16 @@
 {
-  "generatedAt": "2026-09-24T03:11:21.7751878Z",
+  "generatedAt": "2026-09-24T03:35:51.0581985Z",
   "scriptDirectory": "D:\\KindleTools",
   "booksDirectory": "D:\\KindleTools\\books",
   "backupDirectory": "D:\\KindleTools\\backup",
   "records": [
     {
-      "title": "The Autobiography of a Super-Tramp",
-      "url": "https://standardebooks.org/ebooks/w-h-davies/the-autobiography-of-a-super-tramp/downloads/w-h-davies_the-autobiography-of-a-super-tramp.epub",
-      "format": "epub",
-      "file": "D:\\KindleTools\\books\\The Autobiography of a Super-Tramp.epub",
-      "size": 8919,
-      "downloadedAt": "2026-09-24T03:11:21.7694216Z",
+      "title": "The Murder of Roger Ackroyd",
+      "url": "https://www.aliceandbooks.com/book/download-link/527/1577",
+      "format": "pdf",
+      "file": "D:\\KindleTools\\books\\The Murder of Roger Ackroyd.pdf",
+      "size": 1416925,
+      "downloadedAt": "2026-09-24T03:35:51.0575188Z",
       "kindle": null,
       "status": "success"
     }

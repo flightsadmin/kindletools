@@ -54,7 +54,7 @@ param(
 
     [int]$Limit = 3,   # 0 = unlimited
 
-    [int]$Retries = 3,
+    [int]$Retries = 1,
 
     [int]$Timeout = 30000,
 
@@ -204,7 +204,7 @@ OPTIONS
   -Format <format>       epub | pdf | mobi | kindle  (default: pdf)
   -Delay <ms>            Delay between downloads (default: 1000)
   -Limit <n>             Max number of books (default: 3; 0 = unlimited)
-  -Retries <n>           Download attempts (default: 3)
+  -Retries <n>           Download attempts (default: 1; no retries)
   -Timeout <ms>          Download timeout (default: 30000)
   -DryRun                Test only; no downloads or file changes
   -Interactive           Force interactive menu
@@ -341,6 +341,10 @@ function Get-StandardDownloadInfo {
     $slug = Get-StandardSlugFromPath $PagePath
     $base = "$($Script:STANDARD_URL)$($PagePath.TrimEnd('/'))/downloads"
     $fmt = Normalize-Format $PreferredFormat
+
+    if ($fmt -eq 'pdf') {
+        throw 'Standard Ebooks does not offer PDF downloads. Select AliceAndBooks for PDF, or choose EPUB.'
+    }
 
     if ($fmt -eq 'mobi') {
         return [pscustomobject]@{
@@ -502,31 +506,22 @@ function Get-AliceBookDownload {
     }
 
     $links = Get-HtmlLinks -Html $resp.Content -BaseUrl $Book.PageUrl
+    $preferred = Normalize-Format $Options.Format
 
     foreach ($link in $links) {
-        if ($link.Url -match '\.(epub|pdf|mobi)(?:[?#]|$)') {
+        $directFormat = if ($link.Url -match '\.(epub|pdf|mobi)(?:[?#]|$)') { $Matches[1].ToLowerInvariant() } else { '' }
+        $isDownloadEndpoint = ([Uri]$link.Url).AbsolutePath -match '^/book/download-link/\d+/\d+/?$'
+        $labelMatches = $link.Text -match "(?i)\b$preferred\b"
+        if ($directFormat -eq $preferred -or ($isDownloadEndpoint -and $labelMatches)) {
             return [pscustomobject]@{
                 Url    = $link.Url
                 Title  = $Book.Title
-                Format = (Get-ExtensionFromUrl $link.Url 'epub')
+                Format = $preferred
             }
         }
     }
 
-    foreach ($link in $links) {
-        $text = ("$($link.Text) $($link.Url)").ToLowerInvariant()
-        if ($text -match 'download|epub|pdf|mobi') {
-            if (Test-HttpUrl $link.Url) {
-                return [pscustomobject]@{
-                    Url    = $link.Url
-                    Title  = $Book.Title
-                    Format = (Get-ExtensionFromUrl $link.Url 'epub')
-                }
-            }
-        }
-    }
-
-    throw "No supported EPUB / PDF / MOBI download found for `"$($Book.Title)`""
+    throw "No $($preferred.ToUpperInvariant()) download found for `"$($Book.Title)`""
 }
 
 function Build-AliceDownloadList {
@@ -663,6 +658,20 @@ function Build-DownloadList {
 # ============================================================
 # DOWNLOAD
 # ============================================================
+function Assert-BookFile([string]$Path, [string]$Format) {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $header = New-Object byte[] 512
+        $count = $stream.Read($header, 0, $header.Length)
+        $text = [Text.Encoding]::ASCII.GetString($header, 0, $count)
+        if ($text -match '(?is)<\s*(?:!doctype\s+html|html\b|\?xml)') {
+            throw 'Server returned an HTML/XML page instead of a book.'
+        }
+        if ($Format -eq 'pdf' -and -not $text.StartsWith('%PDF-')) { throw 'Missing PDF header.' }
+        if ($Format -eq 'epub' -and -not $text.StartsWith('PK')) { throw 'Missing EPUB ZIP header.' }
+    } finally { $stream.Dispose() }
+}
+
 function Download-BookFile {
     param(
         [Parameter(Mandatory)][string]$Uri,
@@ -694,6 +703,8 @@ function Download-BookFile {
             if ($len -le 0) {
                 throw 'Downloaded file is empty.'
             }
+
+            Assert-BookFile -Path $tempFile -Format ([IO.Path]::GetExtension($Destination).TrimStart('.'))
 
             if (Test-Path -LiteralPath $Destination) {
                 Remove-Item -LiteralPath $Destination -Force
@@ -1056,9 +1067,9 @@ function Invoke-Interactive {
         }
     }
 
-    $format = Read-Choice -Prompt 'Preferred format:' -DefaultKey '2' -Choices @(
-        @{ Key = '1'; Label = 'EPUB'; Value = 'epub' }
-        @{ Key = '2'; Label = 'PDF (where available)'; Value = 'pdf' }
+    $format = Read-Choice -Prompt 'Preferred format:' -DefaultKey '1' -Choices @(
+        @{ Key = '1'; Label = 'PDF (where available)'; Value = 'pdf' }
+        @{ Key = '2'; Label = 'EPUB'; Value = 'epub' }
         @{ Key = '3'; Label = 'MOBI / Kindle (azw3 on Standard Ebooks)'; Value = 'mobi' }
     )
 
@@ -1246,6 +1257,7 @@ function Main {
             "$filename.$ext"
         }
         $destination = Join-Path $options.Output $finalFilename
+
 
         Write-Host ''
         Write-Step "[$index/$($downloads.Count)] $($book.Title)"

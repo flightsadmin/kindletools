@@ -1,3 +1,15 @@
+# Kindle Manager
+
+Run `powershell -File .\kindleManager.ps1` to choose between downloading books and managing your Kindle (USB / MTP transfers, browsing, and backups). The combined script is standalone; the two original PowerShell scripts are retained.
+
+Books, backups, and download inventories use folders beside the script. Downloader command-line options remain available:
+
+```powershell
+.\kindleManager.ps1 -Help
+.\kindleManager.ps1 -Mode Transfer
+.\kindleManager.ps1 -Source standard -Format epub -Limit 3
+```
+
 # Legal book downloader
 
 `legal_book_downloader.py` downloads public-domain Project Gutenberg ebooks and direct book-file URLs for material you are licensed or otherwise authorized to download. It does not scrape catalogues, bypass access controls, or support shadow libraries.
