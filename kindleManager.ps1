@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
 Download books and manage a Kindle from one standalone script.
@@ -1012,6 +1012,19 @@ function Invoke-DryRun {
 # ============================================================
 # INTERACTIVE
 # ============================================================
+function Read-DownloadInput {
+    param([string]$Prompt)
+    Write-Host "  $Prompt" -ForegroundColor Yellow
+    Write-Host '  > ' -ForegroundColor Cyan -NoNewline
+    return (Read-Host)
+}
+
+function Write-DownloadSetting {
+    param([string]$Label, [string]$Value)
+    Write-Host ('  {0,-12}' -f $Label) -ForegroundColor Gray -NoNewline
+    Write-Host $Value -ForegroundColor Green
+}
+
 function Read-Choice {
     param(
         [string]$Prompt,
@@ -1020,18 +1033,23 @@ function Read-Choice {
     )
 
     Write-Host ''
-    Write-Host $Prompt
+    Write-Host $Prompt -ForegroundColor Cyan
     foreach ($c in $Choices) {
         $marker = if ($c.Key -eq $DefaultKey) { ' (default)' } else { '' }
-        Write-Host ("  {0}) {1}{2}" -f $c.Key, $c.Label, $marker)
+        Write-Host ("  [{0}] " -f $c.Key) -ForegroundColor Yellow -NoNewline
+        Write-Host $c.Label -ForegroundColor White -NoNewline
+        Write-Host $marker -ForegroundColor Green
     }
 
     while ($true) {
-        $answer = (Read-Host "Enter choice [$DefaultKey]").Trim()
+        $answer = (Read-DownloadInput "Choose a number (ENTER = $DefaultKey)").Trim()
         if ([string]::IsNullOrEmpty($answer)) { $answer = $DefaultKey }
         $found = $Choices | Where-Object { $_.Key -eq $answer } | Select-Object -First 1
-        if ($found) { return $found.Value }
-        Write-Host 'Invalid choice. Please try again.'
+        if ($found) {
+            Write-Host "  Selected: $($found.Label)" -ForegroundColor Green
+            return $found.Value
+        }
+        Write-Host '  Invalid choice. Enter one of the numbers above.' -ForegroundColor Red
     }
 }
 
@@ -1042,11 +1060,11 @@ function Read-YesNo {
     )
     $hint = if ($DefaultYes) { 'Y/n' } else { 'y/N' }
     while ($true) {
-        $answer = (Read-Host "$Prompt [$hint]").Trim().ToLowerInvariant()
+        $answer = (Read-DownloadInput "$Prompt [$hint]").Trim().ToLowerInvariant()
         if ([string]::IsNullOrEmpty($answer)) { return $DefaultYes }
         if ($answer -in @('y', 'yes')) { return $true }
         if ($answer -in @('n', 'no')) { return $false }
-        Write-Host 'Please enter y or n.'
+        Write-Host '  Please enter y or n.' -ForegroundColor Red
     }
 }
 
@@ -1054,11 +1072,12 @@ function Invoke-Interactive {
     param($Base)
 
     Write-Host ''
-    Write-Host '============================================================'
-    Write-Host ' Portable Legal Book Downloader — Interactive Mode'
-    Write-Host '============================================================'
+    Write-Host '============================================================' -ForegroundColor DarkCyan
+    Write-Host ' DOWNLOAD BOOKS' -ForegroundColor Cyan
+    Write-Host '============================================================' -ForegroundColor DarkCyan
+    Write-Host ' Press ENTER to accept a default. Uppercase Y/N marks the default.' -ForegroundColor Gray
 
-    $source = Read-Choice -Prompt 'Select download source:' -DefaultKey '1' -Choices @(
+    $source = Read-Choice -Prompt '1 / 4  Download source' -DefaultKey '1' -Choices @(
         @{ Key = '1'; Label = 'Standard Ebooks (public domain, high quality)'; Value = 'standard' }
         @{ Key = '2'; Label = 'AliceAndBooks'; Value = 'alice' }
         @{ Key = '3'; Label = 'Direct authorized URL'; Value = 'url' }
@@ -1070,37 +1089,46 @@ function Invoke-Interactive {
 
     if ($source -eq 'url') {
         while ($true) {
-            $url = (Read-Host 'Enter book URL (http/https)').Trim()
+            $url = (Read-DownloadInput 'Enter book URL (http/https)').Trim()
             if (Test-HttpUrl $url) { break }
-            Write-Host 'Must be a valid HTTP or HTTPS URL.'
+            Write-Host '  Must be a valid HTTP or HTTPS URL.' -ForegroundColor Red
         }
     }
 
     if ($source -eq 'manifest') {
         while ($true) {
-            $raw = (Read-Host 'Path to JSON manifest file').Trim()
+            $raw = (Read-DownloadInput 'Path to JSON manifest file').Trim()
             $manifest = Resolve-PortablePath $raw
             if (Test-Path -LiteralPath $manifest) { break }
-            Write-Host "File not found: $manifest"
+            Write-Host "  File not found: $manifest" -ForegroundColor Red
         }
     }
 
-    $format = Read-Choice -Prompt 'Preferred format:' -DefaultKey '1' -Choices @(
+    $format = Read-Choice -Prompt '2 / 4  Book format' -DefaultKey '1' -Choices @(
         @{ Key = '1'; Label = 'PDF (where available)'; Value = 'pdf' }
         @{ Key = '2'; Label = 'EPUB'; Value = 'epub' }
         @{ Key = '3'; Label = 'MOBI / Kindle (azw3 on Standard Ebooks)'; Value = 'mobi' }
     )
 
-    $limitRaw = (Read-Host "Max number of books [$($Base.Limit)]").Trim()
-    $limit = $Base.Limit
-    if ($limitRaw) {
+    Write-Host ''
+    Write-Host '3 / 4  Download limit' -ForegroundColor Cyan
+    Write-Host '  Enter 0 for unlimited books.' -ForegroundColor Gray
+    while ($true) {
+        $limitRaw = (Read-DownloadInput "Max number of books (ENTER = $($Base.Limit))").Trim()
+        $limit = $Base.Limit
+        if (-not $limitRaw) { break }
         $n = 0
-        if (-not [int]::TryParse($limitRaw, [ref]$n) -or $n -lt 1) {
-            throw 'Limit must be a positive integer.'
+        if (-not [int]::TryParse($limitRaw, [ref]$n) -or $n -lt 0) {
+            Write-Host '  Enter a whole number of 0 or more.' -ForegroundColor Red
+            continue
         }
         $limit = $n
+        break
     }
 
+    Write-Host ''
+    Write-Host '4 / 4  Download mode' -ForegroundColor Cyan
+    Write-Host '  Dry-run checks availability without saving books.' -ForegroundColor Gray
     $dryRun = Read-YesNo -Prompt 'Dry-run only (no downloads)?' -DefaultYes:$false
     $kindle = $Base.Kindle
     $kindlePath = $Base.KindlePath
@@ -1109,22 +1137,24 @@ function Invoke-Interactive {
     $timeout = $Base.Timeout
 
     Write-Host ''
-    Write-Host 'Summary'
-    Write-Host '-------'
-    Write-Host "  Source:   $source"
-    if ($url) { Write-Host "  URL:      $url" }
-    if ($manifest) { Write-Host "  Manifest: $manifest" }
-    Write-Host "  Format:   $format"
-    Write-Host ("  Limit:    {0}" -f $(if ($limit -gt 0) { $limit } else { 'unlimited' }))
-    Write-Host ("  Dry-run:  {0}" -f $(if ($dryRun) { 'yes' } else { 'no' }))
-    Write-Host ("  Kindle:   {0}" -f $(if ($kindle) { $(if ($kindlePath) { $kindlePath } else { 'auto-detect' }) } else { 'no' }))
-    Write-Host "  Delay:    $delay ms"
-    Write-Host "  Attempts: $retries"
-    Write-Host "  Timeout:  $timeout ms"
+    Write-Host '------------------------------------------------------------' -ForegroundColor DarkCyan
+    Write-Host ' REVIEW DOWNLOAD SETTINGS' -ForegroundColor Cyan
+    Write-DownloadSetting 'Source' $source
+    if ($url) { Write-DownloadSetting 'URL' $url }
+    if ($manifest) { Write-DownloadSetting 'Manifest' $manifest }
+    Write-DownloadSetting 'Format' $format.ToUpperInvariant()
+    Write-DownloadSetting 'Save to' $(if ($Base.Output) { $Base.Output } else { $Script:BOOKS_DIR })
+    Write-DownloadSetting 'Limit' $(if ($limit -gt 0) { $limit } else { 'Unlimited' })
+    Write-DownloadSetting 'Mode' $(if ($dryRun) { 'Dry-run (no downloads)' } else { 'Download books' })
+    Write-DownloadSetting 'Kindle' $(if ($kindle) { if ($kindlePath) { $kindlePath } else { 'Auto-detect' } } else { 'No automatic copy' })
+    Write-DownloadSetting 'Delay' "$delay ms"
+    Write-DownloadSetting 'Attempts' "$retries"
+    Write-DownloadSetting 'Timeout' "$timeout ms"
+    Write-Host '------------------------------------------------------------' -ForegroundColor DarkCyan
     Write-Host ''
 
     if (-not (Read-YesNo -Prompt 'Proceed with these settings?' -DefaultYes:$true)) {
-        Write-Host 'Cancelled.'
+        Write-Host '  Download cancelled.' -ForegroundColor Yellow
         return $null
     }
 
@@ -2906,6 +2936,7 @@ function Invoke-KindleBrowser {
         Write-Host "  I       File information"
         Write-Host "  C       Copy item to PC"
         Write-Host "  D       Delete file"
+        Write-Host "  S       Search Kindle"
         Write-Host "  R       Refresh"
         Write-Host "  Q       Exit browser"
         Write-Host ""
@@ -2914,6 +2945,11 @@ function Invoke-KindleBrowser {
 
         if ($Choice -match "^[Qq]$") {
             return
+        }
+
+        if ($Choice -match "^[Ss]$") {
+            Search-Kindle
+            continue
         }
 
         if ($Choice -match "^[Rr]$") {
@@ -4501,21 +4537,13 @@ function Show-MainMenu {
     Write-Host "------------------------------------------------------------"
     Write-Host ""
 
-    Write-Host "1.  PC -> Kindle"
-    Write-Host "2.  Kindle -> PC"
-    Write-Host "3.  Browse Kindle"
-    Write-Host "4.  Browse Kindle documents"
-    Write-Host "5.  Search Kindle"
-    Write-Host "6.  File information"
-    Write-Host "7.  Backup Kindle"
-    Write-Host "8.  Check Kindle storage"
-    Write-Host "9.  Delete file from Kindle" -ForegroundColor Magenta
-    Write-Host "10. Kindle information"
-    Write-Host "11. Open Kindle in File Explorer"
-    Write-Host "12. Refresh / Reconnect"
-    Write-Host "13. Open PC books folder"
-    Write-Host "14. List files in documents"
-    Write-Host "15. Return to Kindle Manager"
+    Write-Host "1. Send books to Kindle"
+    Write-Host "2. Copy books from Kindle"
+    Write-Host "3. Browse Kindle files"
+    Write-Host "4. Backup Kindle"
+    Write-Host "5. Kindle information and storage"
+    Write-Host "6. Open PC books folder"
+    Write-Host "7. Return to Kindle Manager"
 
     Write-Host ""
     Write-Host "------------------------------------------------------------"
@@ -4529,249 +4557,23 @@ function Show-MainMenu {
 Initialize-LocalFolders
 
 while ($true) {
-
     Show-MainMenu
-
     $Choice = Read-Host "Choose an option"
-
+    if ($Choice -eq '7') { return }
+    Clear-Host
     switch ($Choice) {
-
-        # ----------------------------------------------------
-        # PC -> KINDLE
-        # ----------------------------------------------------
-
-        "1" {
-
-            Clear-Host
-
-            Copy-PCToKindle
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # KINDLE -> PC
-        # ----------------------------------------------------
-
-        "2" {
-
-            Clear-Host
-
-            Copy-KindleToPC
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # FULL BROWSER
-        # ----------------------------------------------------
-
-        "3" {
-
-            Clear-Host
-
-            Browse-Kindle
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # DOCUMENTS BROWSER
-        # ----------------------------------------------------
-
-        "4" {
-
-            Clear-Host
-
-            Browse-KindleDocuments
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # SEARCH
-        # ----------------------------------------------------
-
-        "5" {
-
-            Search-Kindle
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # FILE INFORMATION
-        # ----------------------------------------------------
-
-        "6" {
-
-            Clear-Host
-
-            if (-not (Wait-ForKindle -TimeoutSeconds 30)) {
-
-                Pause-Screen
-
-                continue
-            }
-
-            $Documents = Get-KindleDocuments
-
-            if ($null -eq $Documents) {
-
-                Write-Host ""
-                Write-Host "Documents folder not found." `
-                    -ForegroundColor Red
-
-                Pause-Screen
-
-                continue
-            }
-
-            $Selected = Select-MtpItem `
-                -Folder $Documents
-
-            if ($null -ne $Selected) {
-
-                Show-MtpItemInformation `
-                    -Folder $Documents `
-                    -Item $Selected `
-                    -LogicalPath $(Get-KindlePath)
-            }
-        }
-
-        # ----------------------------------------------------
-        # BACKUP
-        # ----------------------------------------------------
-
-        "7" {
-
-            Clear-Host
-
-            Backup-Kindle
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # STORAGE
-        # ----------------------------------------------------
-
-        "8" {
-
-            Clear-Host
-
-            Show-KindleStorage
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # DELETE
-        # ----------------------------------------------------
-
-        "9" {
-
-            Clear-Host
-
-            Delete-KindleFiles
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # INFORMATION
-        # ----------------------------------------------------
-
-        "10" {
-
-            Clear-Host
-
+        '1' { Copy-PCToKindle }
+        '2' { Copy-KindleToPC }
+        '3' { Browse-Kindle }
+        '4' { Backup-Kindle }
+        '5' {
             Show-KindleInfo
-
-            Pause-Screen
+            if (Test-KindleConnection) { Show-KindleStorage }
         }
-
-        # ----------------------------------------------------
-        # FILE EXPLORER
-        # ----------------------------------------------------
-
-        "11" {
-
-            Clear-Host
-
-            Open-KindleExplorer
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # REFRESH
-        # ----------------------------------------------------
-
-        "12" {
-
-            Clear-Host
-
-            Refresh-Kindle
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # OPEN PC BOOKS
-        # ----------------------------------------------------
-
-        "13" {
-
-            Clear-Host
-
-            Open-PCBooksFolder
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # LIST DOCUMENTS
-        # ----------------------------------------------------
-
-        "14" {
-
-            Clear-Host
-
-            List-KindleFiles
-
-            Pause-Screen
-        }
-
-        # ----------------------------------------------------
-        # EXIT
-        # ----------------------------------------------------
-
-        "15" {
-
-            Clear-Host
-
-            Write-Host ""
-            Write-Host "Kindle MTP File Manager closed." `
-                -ForegroundColor Green
-
-            Write-Host ""
-
-            return
-        }
-
-        # ----------------------------------------------------
-        # INVALID
-        # ----------------------------------------------------
-
-        default {
-
-            Write-Host ""
-            Write-Host "Invalid option." -ForegroundColor Red
-
-            Start-Sleep -Seconds 1
-        }
+        '6' { Open-PCBooksFolder }
+        default { Write-Host 'Invalid option.' -ForegroundColor Yellow }
     }
+    Pause-Screen
 }
 }
 
@@ -4796,7 +4598,7 @@ while ($true) {
     Write-Host ''
     Write-Host 'Kindle Manager' -ForegroundColor Cyan
     Write-Host '  1. Download books'
-    Write-Host '  2. Manage Kindle (transfer, browse, backup)'
+    Write-Host '  2. Manage Kindle'
     Write-Host '  3. Exit'
     $selection = Read-Host 'Choose an option'
     try {
