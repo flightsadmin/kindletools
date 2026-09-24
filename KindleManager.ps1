@@ -36,6 +36,8 @@ param(
 
     [int]$Timeout = 30000,
 
+    [int]$MaxRuntimeMinutes = 10,
+
     [switch]$DryRun,
 
     [switch]$Interactive,
@@ -81,6 +83,56 @@ function Ensure-Directory([string]$Directory) {
     if (-not (Test-Path -LiteralPath $Directory)) {
         New-Item -ItemType Directory -Path $Directory -Force | Out-Null
     }
+}
+
+function Invoke-SelfRepair {
+    param([string]$OutputFolder = $script:BOOKS_DIR)
+    $fixed = 0
+    foreach ($folder in @($OutputFolder, $script:BACKUP_DIR, $script:DOWNLOAD_RECORDS_DIR)) {
+        try {
+            if (-not (Test-Path -LiteralPath $folder -PathType Container)) {
+                Ensure-Directory $folder
+                $fixed++
+            }
+        } catch {
+            Write-WarnMsg "Could not create folder ${folder}: $($_.Exception.Message)"
+        }
+    }
+
+    # A failed download can leave a temporary .download file. Remove only
+    # files created by this application and only after they are one hour old.
+    try {
+        $cutoff = (Get-Date).AddHours(-1)
+        foreach ($partial in @(Get-ChildItem -LiteralPath $OutputFolder -Filter '*.download' -File -ErrorAction SilentlyContinue)) {
+            if ($partial.LastWriteTime -lt $cutoff) {
+                Remove-Item -LiteralPath $partial.FullName -Force
+                $fixed++
+                Write-WarnMsg "Removed abandoned partial download: $($partial.Name)"
+            }
+        }
+    } catch {
+        Write-WarnMsg "Could not clean partial downloads: $($_.Exception.Message)"
+    }
+
+    # Preserve malformed records for recovery, then let the downloader rebuild
+    # a clean source record after the next successful download.
+    if (Test-Path -LiteralPath $script:DOWNLOAD_RECORDS_DIR -PathType Container) {
+        foreach ($recordFile in @(Get-ChildItem -LiteralPath $script:DOWNLOAD_RECORDS_DIR -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+            try {
+                $null = Get-Content -LiteralPath $recordFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            } catch {
+                $quarantine = "$($recordFile.FullName).invalid.$((Get-Date).ToString('yyyyMMddHHmmss'))"
+                try {
+                    Move-Item -LiteralPath $recordFile.FullName -Destination $quarantine -Force
+                    $fixed++
+                    Write-WarnMsg "Quarantined invalid download record: $($recordFile.Name)"
+                } catch {
+                    Write-WarnMsg "Could not quarantine invalid record $($recordFile.Name)."
+                }
+            }
+        }
+    }
+    if ($fixed -gt 0) { Write-Success "Self-repair completed: fixed $fixed item(s)." }
 }
 
 function Read-DownloadInput {
@@ -281,6 +333,7 @@ OPTIONS
   -Limit <n>             Max number of books (default: 3; 0 = unlimited)
   -Retries <n>           Download attempts (default: 1; no retries)
   -Timeout <ms>          Download timeout (default: 30000)
+  -MaxRuntimeMinutes <n> Stop after this many minutes (default: 10; 0 = no limit)
   -DryRun                Test only; no downloads or file changes
   -Interactive           Force interactive menu
   -Help                  Show this help
@@ -297,6 +350,18 @@ EXAMPLES
 "@ | Write-Host
 }
 #endregion
+
+function Test-DownloadTimeLimit {
+    param($Options)
+
+    if (-not $Options.Deadline) { return $false }
+    if ([DateTime]::UtcNow -lt $Options.Deadline) { return $false }
+    if (-not ($Options.PSObject.Properties.Name -contains 'TimeLimitReported' -and $Options.TimeLimitReported)) {
+        Write-WarnMsg "Maximum runtime of $($Options.MaxRuntimeMinutes) minute(s) reached. Finishing without starting more downloads."
+        $Options | Add-Member -NotePropertyName TimeLimitReported -NotePropertyValue $true -Force
+    }
+    return $true
+}
 
 #region HTTP requests
 function Invoke-BookWebRequest {
@@ -447,6 +512,7 @@ function Get-StandardBooks {
     $nameRegex = [regex]'property\s*=\s*["'']schema:name["''][^>]*>([^<]+)<'
 
     while ($page -le $maxPages) {
+        if (Test-DownloadTimeLimit -Options $Options) { break }
         $url = "$($Script:STANDARD_EBOOKS_URL)?page=$page"
         try {
             $resp = Invoke-BookWebRequest -Uri $url -Accept 'text/html,application/xhtml+xml' -TimeoutMs $Options.Timeout
@@ -546,8 +612,9 @@ function Get-AliceBooks {
     $books = New-Object System.Collections.Generic.List[object]
     $seen = @{}
 
-    foreach ($link in $links) {
-        if ($link.Url -notmatch '/book/') { continue }
+        foreach ($link in $links) {
+            if (Test-DownloadTimeLimit -Options $Options) { return $books }
+            if ($link.Url -notmatch '/book/') { continue }
         $id = Get-AliceBookId $link.Url
         if (-not $id -or $seen.ContainsKey($id)) { continue }
         $seen[$id] = $true
@@ -668,10 +735,12 @@ function Build-GlobalGreyDownloadList {
     $seenBooks = @{}
     $count = 0
     while ($url -and -not $seenPages.ContainsKey($url)) {
+        if (Test-DownloadTimeLimit -Options $Options) { break }
         $seenPages[$url] = $true
         $response = Invoke-BookWebRequest -Uri $url -TimeoutMs $Options.Timeout -Accept 'text/html'
         $links = @(Get-HtmlLinks -Html $response.Content -BaseUrl $url)
         foreach ($link in $links) {
+            if (Test-DownloadTimeLimit -Options $Options) { return }
             $uri = [uri]$link.Url
             if ($uri.Host -ne 'www.globalgreyebooks.com' -or $uri.AbsolutePath -notmatch '-ebook\.html$' -or
                 -not $link.Text -or $seenBooks.ContainsKey($link.Url)) { continue }
@@ -1117,6 +1186,21 @@ function Invoke-Interactive {
     $delay = $Base.Delay
     $retries = $Base.Retries
     $timeout = $Base.Timeout
+    $maxRuntimeMinutes = $Base.MaxRuntimeMinutes
+
+    Write-Host ''
+    Write-Host '  Maximum runtime protects unlimited downloads from running forever.' -ForegroundColor Gray
+    while ($true) {
+        $runtimeRaw = (Read-DownloadInput "Maximum runtime in minutes (ENTER = $maxRuntimeMinutes; 0 = no limit)").Trim()
+        if (-not $runtimeRaw) { break }
+        $runtimeValue = 0
+        if (-not [int]::TryParse($runtimeRaw, [ref]$runtimeValue) -or $runtimeValue -lt 0) {
+            Write-Host '  Enter a whole number of 0 or more.' -ForegroundColor Red
+            continue
+        }
+        $maxRuntimeMinutes = $runtimeValue
+        break
+    }
 
     Write-Host ''
     Write-Host '------------------------------------------------------------' -ForegroundColor DarkCyan
@@ -1133,6 +1217,7 @@ function Invoke-Interactive {
     Write-DownloadSetting 'Delay' "$delay ms"
     Write-DownloadSetting 'Attempts' "$retries"
     Write-DownloadSetting 'Timeout' "$timeout ms"
+    Write-DownloadSetting 'Max runtime' $(if ($maxRuntimeMinutes -gt 0) { "$maxRuntimeMinutes minute(s)" } else { 'None' })
     Write-Host '------------------------------------------------------------' -ForegroundColor DarkCyan
     Write-Host ''
 
@@ -1154,6 +1239,7 @@ function Invoke-Interactive {
         Limit      = $limit
         Retries    = $retries
         Timeout    = $timeout
+        MaxRuntimeMinutes = $maxRuntimeMinutes
         DryRun     = $dryRun
     }
 }
@@ -1174,8 +1260,10 @@ function Invoke-DryRun {
     Write-Host "Delay:         $($Options.Delay) ms"
     $limitText = if ($Options.Limit -gt 0) { $Options.Limit } else { 'unlimited' }
     Write-Host "Limit:         $limitText"
-    Write-Host "Attempts:      $($Options.Retries)"
-    Write-Host "Timeout:       $($Options.Timeout) ms"
+  Write-Host "Attempts:      $($Options.Retries)"
+  Write-Host "Timeout:       $($Options.Timeout) ms"
+    $runtimeText = if ($Options.MaxRuntimeMinutes -gt 0) { "$($Options.MaxRuntimeMinutes) minute(s)" } else { 'none' }
+    Write-Host "Max runtime:   $runtimeText"
     Write-Host ''
 
     Write-Step 'Testing output path...'
@@ -1345,6 +1433,7 @@ function Invoke-DownloadWorkflow {
         Limit      = $Limit
         Retries    = $Retries
         Timeout    = $Timeout
+        MaxRuntimeMinutes = $MaxRuntimeMinutes
         DryRun     = [bool]$DryRun
     }
 
@@ -1372,6 +1461,11 @@ function Invoke-DownloadWorkflow {
 
     if ($options.Source -eq 'gutenberg') { $options.Delay = [Math]::Max(2000, $options.Delay) }
     if ($options.Source -eq 'globalgrey') { $options.Delay = [Math]::Max(1000, $options.Delay) }
+
+    if ($options.MaxRuntimeMinutes -lt 0) {
+        Write-ErrMsg '-MaxRuntimeMinutes must be 0 or greater.'
+        throw 'Invalid runtime limit.'
+    }
 
     # Validate
     if ($options.Source -notin @('standard', 'alice', 'globalgrey', 'gutenberg', 'url', 'manifest')) {
@@ -1405,12 +1499,21 @@ function Invoke-DownloadWorkflow {
         return
     }
 
+    Invoke-SelfRepair -OutputFolder $options.Output
     Ensure-Directory $options.Output
     Ensure-Directory $Script:BACKUP_DIR
     Ensure-Directory $script:DOWNLOAD_RECORDS_DIR
 
+    $options | Add-Member -NotePropertyName StartedAt -NotePropertyValue ([DateTime]::UtcNow) -Force
+    $options | Add-Member -NotePropertyName Deadline -NotePropertyValue $(if ($options.MaxRuntimeMinutes -gt 0) { [DateTime]::UtcNow.AddMinutes($options.MaxRuntimeMinutes) } else { $null }) -Force
+
     Write-Success "Books folder: $($options.Output)"
     Write-Success "Backup folder: $($Script:BACKUP_DIR)"
+    if ($options.MaxRuntimeMinutes -gt 0) {
+        Write-Host "Maximum runtime: $($options.MaxRuntimeMinutes) minute(s)" -ForegroundColor Gray
+    } else {
+        Write-Host 'Maximum runtime: none' -ForegroundColor Gray
+    }
 
     $kindlePath = $null
     $kindleMtpDocuments = $null
@@ -1441,6 +1544,7 @@ function Invoke-DownloadWorkflow {
     }
 
     Write-Step "Building download list from $($options.Source)..."
+    if (Test-DownloadTimeLimit -Options $options) { return }
     $existingNames = Get-ExistingBookNames -Output $options.Output
     $downloadRecords = Read-DownloadRecords -Source $options.Source
     foreach ($recordName in $downloadRecords.Keys) {
@@ -1480,6 +1584,7 @@ function Invoke-DownloadWorkflow {
     $failed = 0
     $index = 0
     foreach ($book in $downloads) {
+        if (Test-DownloadTimeLimit -Options $options) { break }
         $index++
         $format = Normalize-Format $(if ($book.Format) { $book.Format } else { $options.Format })
         $ext = if ($book.PSObject.Properties.Name -contains 'Extension' -and $book.Extension) {
@@ -1527,7 +1632,12 @@ function Invoke-DownloadWorkflow {
         }
 
         if ($index -lt $downloads.Count -and $options.Delay -gt 0) {
-            Start-Sleep -Milliseconds $options.Delay
+            $sleepMs = $options.Delay
+            if ($options.Deadline) {
+                $remaining = [int][Math]::Max(0, ($options.Deadline - [DateTime]::UtcNow).TotalMilliseconds)
+                $sleepMs = [Math]::Min($sleepMs, $remaining)
+            }
+            if ($sleepMs -gt 0) { Start-Sleep -Milliseconds $sleepMs }
         }
     }
 
@@ -4001,6 +4111,7 @@ function Invoke-KindleTests {
 #region Main menu and command-line routing
 # Dot-sourcing loads the functions without opening the interactive menu.
 if ($MyInvocation.InvocationName -eq '.') { return }
+if (-not $DryRun) { Invoke-SelfRepair }
 if ($Mode -eq 'Test') {
     if (-not (Invoke-KindleTests)) { exit 1 }
     return

@@ -55,7 +55,7 @@ The command-line default format is **PDF**, so specify `-Format epub` or `-Forma
 
 Choose **Global Grey** or **Project Gutenberg** to see an optional title-filter prompt. Enter `Pride and Prejudice`, for example, or leave it blank to browse the source's fiction catalogue. Gutenberg also matches author names. Global Grey searches catalogue pages sequentially, so finding a specific title may take time. Gutenberg loads its complete CSV catalogue into memory before filtering; it does not save a catalogue folder or history file. These integrations use [Global Grey's fiction catalogue](https://www.globalgreyebooks.com/category/ebooks/fiction-page-1.html) and [Gutenberg's machine-readable metadata](https://www.gutenberg.org/policy/robot_access.html).
 
-By default, downloads are limited to three books, with a one-second delay between books and one attempt per book. Enter `0` for an unlimited count. A dry run checks paths and source availability without saving books or creating folders; catalogue and manifest checks inspect a limited sample.
+By default, downloads are limited to three books, with a one-second delay between books and one attempt per book. Enter `0` for an unlimited count. Unlimited and long runs have a ten-minute safety limit by default; set `-MaxRuntimeMinutes 0` to remove it, or choose another value. When the limit is reached, the current request is allowed to finish and no new book is started. A dry run checks paths and source availability without saving books or creating folders; catalogue and manifest checks inspect a limited sample.
 
 Existing files are skipped automatically when their destination filename matches the incoming title and format. For catalogue sources, the script requests extra candidates and continues past skipped titles so your limit means “new books to download.” A skip message shows how many existing titles were ignored. If you want a different edition, rename or remove the old file first.
 
@@ -141,6 +141,9 @@ Folders are created when needed. Relative download, manifest, and Kindle paths a
 # Download all entries in a manifest to a different folder
 .\KindleManager.ps1 -Manifest .\books.json -Output .\library -Limit 0
 
+# Allow an unlimited run for up to 30 minutes
+.\KindleManager.ps1 -Source standard -Format epub -Limit 0 -MaxRuntimeMinutes 30
+
 # Use three attempts per book and a two-second delay between books
 .\KindleManager.ps1 -Source standard -Format epub -Retries 3 -Delay 2000
 
@@ -165,6 +168,7 @@ Automatic copying during downloads (`-Kindle`) uses a filesystem path or a detec
 | `-Delay` | Milliseconds between books; default `1000` |
 | `-Retries` | Total attempts per book, including the first; default `1` |
 | `-Timeout` | Request timeout in milliseconds; default `30000` |
+| `-MaxRuntimeMinutes` | Overall safety limit; default `10`; `0` means no time limit. The current download may finish when the limit is reached. |
 | `-DryRun` | Check availability and paths without saving books |
 | `-Kindle` | Copy completed downloads to a filesystem-accessible Kindle |
 | `-KindlePath` | Kindle documents directory; requires `-Kindle`; otherwise auto-detected |
@@ -201,6 +205,8 @@ A top-level array or a single book object is also accepted. Each entry needs an 
 Choose **Run tests** or run `powershell -NoProfile -File .\KindleManager.ps1 -Mode Test` to execute the `Test*.ps1` files in the `tests` folder beside the script. Each suite runs in its own PowerShell process and reports PASS or FAIL, followed by a total. Command-line test mode returns exit code `1` if any suite fails or no tests are found. The current suites use mocked network/device operations and need no connected Kindle. The optional `tests` folder is required only for this feature.
 
 All implementation code stays in `KindleManager.ps1`, arranged in collapsible `#region` sections for configuration, shared helpers, downloads, Kindle operations, and menu routing. Shared functions avoid duplicate implementations. Manage Kindle labels and actions are defined together in `$ManageActions`.
+
+At startup, the manager performs a small self-repair pass. It creates missing `books`, `backup`, and `downloads` folders, removes abandoned `.download` files older than one hour, and quarantines malformed JSON records as `.invalid.<timestamp>` files so they can be recovered. It cannot repair a disconnected Kindle, an unavailable website, or a damaged source book; those cases are handled with detection, retries, validation, and clear errors.
 
 Dot-source the script to load its functions without opening a menu:
 
