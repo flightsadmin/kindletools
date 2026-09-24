@@ -56,6 +56,7 @@ if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
 $script:BOOKS_DIR = Join-Path $script:ProjectRoot 'books'
 $script:BACKUP_DIR = Join-Path $script:ProjectRoot 'backup'
 $script:DOWNLOAD_RECORDS_DIR = Join-Path $script:ProjectRoot 'downloads'
+$script:KindleDirectExtensions = @('.azw3', '.azw', '.mobi', '.pdf')
 #endregion
 
 #region Shared prompts, logging, and file helpers
@@ -818,6 +819,11 @@ function Get-ExistingBookNames {
     return $names
 }
 
+function Test-KindleDirectFormat {
+    param([string]$Path)
+    return ($script:KindleDirectExtensions -contains ([IO.Path]::GetExtension($Path).ToLowerInvariant()))
+}
+
 function Get-DownloadRecordPath {
     param([string]$Source)
     $safeSource = ($Source -replace '[^a-zA-Z0-9_-]', '_').ToLowerInvariant()
@@ -1499,7 +1505,7 @@ function Invoke-DownloadWorkflow {
             Save-DownloadRecord -Source $options.Source -Book $book -Filename $finalFilename -Format $format -Size $item.Length
 
             $kindleDest = $null
-            if ($kindlePath -or $kindleMtpDocuments) {
+            if (($kindlePath -or $kindleMtpDocuments) -and (Test-KindleDirectFormat $destination)) {
                 try {
                     if ($kindlePath) {
                         $kindleDest = Copy-ToKindle -Source $destination -KindlePath $kindlePath
@@ -1510,6 +1516,8 @@ function Invoke-DownloadWorkflow {
                 } catch {
                     Write-WarnMsg "Kindle copy failed: $($_.Exception.Message)"
                 }
+            } elseif ($options.Kindle -and -not (Test-KindleDirectFormat $destination)) {
+                Write-WarnMsg "Downloaded, but not copied: $format is not a direct USB/MTP Kindle format. Use AZW3, PDF, or Send to Kindle for EPUB."
             }
 
             $successful++
@@ -1932,6 +1940,15 @@ function Copy-PCToKindle {
             $SupportedExtensions -contains $_.Extension.ToLower()
         }
     )
+
+    $DirectFiles = @($Files | Where-Object { Test-KindleDirectFormat $_.FullName })
+    $UnsupportedDirectFiles = @($Files | Where-Object { -not (Test-KindleDirectFormat $_.FullName) })
+    if ($UnsupportedDirectFiles.Count -gt 0) {
+        Write-Host ""
+        Write-WarnMsg "Skipped $($UnsupportedDirectFiles.Count) file(s) that Kindle cannot read when copied directly by USB/MTP."
+        Write-Host "Use AZW3, MOBI, or PDF for direct transfer. Use Send to Kindle for EPUB." -ForegroundColor Gray
+    }
+    $Files = $DirectFiles
 
     if ($Files.Count -eq 0) {
         Write-Host ""
@@ -3898,7 +3915,6 @@ function Invoke-KindleTransfer {
         ".azw",
         ".azw3",
         ".kfx",
-        ".txt",
         ".doc",
         ".docx",
         ".rtf",

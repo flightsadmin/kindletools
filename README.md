@@ -90,6 +90,8 @@ Browser commands:
 
 Transfers copy files as they are; they do not convert formats or guarantee that the Kindle can read every transferred file.
 
+For direct USB/MTP transfer to a recent Paperwhite, use **AZW3**, **MOBI**, or **PDF**. EPUB is an input format for Amazon’s Send to Kindle conversion service; copying an EPUB directly into the Kindle documents folder may leave it invisible or unreadable. The manager therefore skips EPUB files during direct Kindle transfers and tells you to use Send to Kindle. Downloading with `-Kindle -Format epub` still saves the EPUB on the PC but does not copy it directly to the device.
+
 ## Folders and paths
 
 ```text
