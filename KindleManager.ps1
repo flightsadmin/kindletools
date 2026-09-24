@@ -26,7 +26,7 @@ param(
     [string]$KindlePath,
 
     [ValidateSet('pdf', 'epub', 'mobi', 'kindle')]
-    [string]$Format = 'pdf',
+    [string]$Format = 'mobi',
 
     [int]$Delay = 2000,
 
@@ -328,7 +328,7 @@ OPTIONS
   -Output <folder>       Download destination (default: ./books)
   -Kindle                Copy downloaded books to Kindle
   -KindlePath <folder>   Kindle documents folder (auto-detect if omitted)
-  -Format <format>       epub | pdf | mobi | kindle  (default: pdf)
+  -Format <format>       epub | pdf | mobi | kindle  (default: mobi)
   -Delay <ms>            Delay between downloads (default: 1000)
   -Limit <n>             Max number of books (default: 3; 0 = unlimited)
   -Retries <n>           Download attempts (default: 1; no retries)
@@ -1149,15 +1149,14 @@ function Invoke-Interactive {
         $search = (Read-DownloadInput "Title filter (ENTER = all; current: $search)").Trim()
     }
     $formatChoices = @(
-        @{ Key = '1'; Label = 'PDF (where available)'; Value = 'pdf' }
+        @{ Key = '1'; Label = 'MOBI / Kindle (AZW3 on Standard Ebooks and Global Grey)'; Value = 'mobi' }
         @{ Key = '2'; Label = 'EPUB'; Value = 'epub' }
-        @{ Key = '3'; Label = 'MOBI / Kindle (AZW3 on Standard Ebooks and Global Grey)'; Value = 'mobi' }
+        @{ Key = '3'; Label = 'PDF (where available)'; Value = 'pdf' }
     )
 
     $defaultFormat = '1'
     if ($source -in @('standard', 'gutenberg')) {
         $formatChoices = @($formatChoices | Where-Object { $_.Value -ne 'pdf' })
-        $defaultFormat = '2'
     }
     $format = Read-Choice -Prompt '2 / 4  Book format' -DefaultKey $defaultFormat -Choices $formatChoices
 
@@ -1178,29 +1177,14 @@ function Invoke-Interactive {
     }
 
     Write-Host ''
-    Write-Host '4 / 4  Download mode' -ForegroundColor Cyan
-    Write-Host '  Dry-run checks availability without saving books.' -ForegroundColor Gray
-    $dryRun = Read-YesNo -Prompt 'Dry-run only (no downloads)?' -DefaultYes:$false
+    Write-Host '4 / 4  Download settings' -ForegroundColor Cyan
+    $dryRun = [bool]$Base.DryRun
     $kindle = $Base.Kindle
     $kindlePath = $Base.KindlePath
     $delay = $Base.Delay
     $retries = $Base.Retries
     $timeout = $Base.Timeout
     $maxRuntimeMinutes = $Base.MaxRuntimeMinutes
-
-    Write-Host ''
-    Write-Host '  Maximum runtime protects unlimited downloads from running forever.' -ForegroundColor Gray
-    while ($true) {
-        $runtimeRaw = (Read-DownloadInput "Maximum runtime in minutes (ENTER = $maxRuntimeMinutes; 0 = no limit)").Trim()
-        if (-not $runtimeRaw) { break }
-        $runtimeValue = 0
-        if (-not [int]::TryParse($runtimeRaw, [ref]$runtimeValue) -or $runtimeValue -lt 0) {
-            Write-Host '  Enter a whole number of 0 or more.' -ForegroundColor Red
-            continue
-        }
-        $maxRuntimeMinutes = $runtimeValue
-        break
-    }
 
     Write-Host ''
     Write-Host '------------------------------------------------------------' -ForegroundColor DarkCyan
@@ -3965,7 +3949,7 @@ function Invoke-BookDownloader {
         [string]$KindlePath,
 
         [ValidateSet('epub', 'pdf', 'mobi', 'kindle')]
-        [string]$Format = 'pdf',
+        [string]$Format = 'mobi',
 
         [int]$Delay = 1000,
 
