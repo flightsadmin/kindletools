@@ -1964,6 +1964,19 @@ function Copy-PCToKindle {
     }
 
     Write-Host ""
+    Write-Host "Existing files on Kindle:" -ForegroundColor Cyan
+    Write-Host "  1. Overwrite all"
+    Write-Host "  2. Skip all"
+    Write-Host "  3. Ask for each file"
+    Write-Host ""
+    $ConflictPolicy = Read-Host "Choose existing-file policy [2]"
+    if ([string]::IsNullOrWhiteSpace($ConflictPolicy)) { $ConflictPolicy = "2" }
+    while ($ConflictPolicy -notin @("1", "2", "3")) {
+        Write-Host "Choose 1, 2, or 3." -ForegroundColor Red
+        $ConflictPolicy = Read-Host "Choose existing-file policy [2]"
+    }
+
+    Write-Host ""
     Write-Host "Starting transfer..." -ForegroundColor Yellow
     Write-Host ""
 
@@ -1986,9 +1999,16 @@ function Copy-PCToKindle {
                 Write-Host "    Already exists on Kindle." `
                     -ForegroundColor Yellow
 
-                $Overwrite = Read-Host "    Replace it? (Y/N)"
+                $Overwrite = $false
+                if ($ConflictPolicy -eq "1") {
+                    $Overwrite = $true
+                }
+                elseif ($ConflictPolicy -eq "3") {
+                    $Answer = Read-Host "    Replace it? (Y/N)"
+                    $Overwrite = ($Answer -match "^[Yy]$")
+                }
 
-                if ($Overwrite -notmatch "^[Yy]$") {
+                if (-not $Overwrite) {
                     Write-Host "    Skipped." -ForegroundColor DarkGray
 
                     continue
