@@ -6,7 +6,6 @@ Download books and manage a Kindle from one self-contained script.
 .\KindleManager.ps1 -Mode Transfer
 .\KindleManager.ps1 -Source standard -Format epub -Limit 3
 #>
-[CmdletBinding()]
 param(
     [ValidateSet('Menu', 'Download', 'Transfer', 'Test')]
     [string]$Mode = 'Menu',
