@@ -47,11 +47,11 @@ param(
 
 #region Configuration
 # Data folders always live beside this script, regardless of the working directory.
-$script:ProjectRoot = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
-    $PSScriptRoot
+if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+    $script:ProjectRoot = $PSScriptRoot
 } else {
-    # Supports: irm <raw-url> | iex
-    (Get-Location).Path
+    # Supports: irm <raw-url> | iex in Windows PowerShell 5.1.
+    $script:ProjectRoot = (Get-Location).Path
 }
 $script:BOOKS_DIR = Join-Path $script:ProjectRoot 'books'
 $script:BACKUP_DIR = Join-Path $script:ProjectRoot 'backup'
