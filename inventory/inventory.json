@@ -1,0 +1,18 @@
+{
+  "generatedAt": "2026-09-24T03:11:21.7751878Z",
+  "scriptDirectory": "D:\\KindleTools",
+  "booksDirectory": "D:\\KindleTools\\books",
+  "backupDirectory": "D:\\KindleTools\\backup",
+  "records": [
+    {
+      "title": "The Autobiography of a Super-Tramp",
+      "url": "https://standardebooks.org/ebooks/w-h-davies/the-autobiography-of-a-super-tramp/downloads/w-h-davies_the-autobiography-of-a-super-tramp.epub",
+      "format": "epub",
+      "file": "D:\\KindleTools\\books\\The Autobiography of a Super-Tramp.epub",
+      "size": 8919,
+      "downloadedAt": "2026-09-24T03:11:21.7694216Z",
+      "kindle": null,
+      "status": "success"
+    }
+  ]
+}
