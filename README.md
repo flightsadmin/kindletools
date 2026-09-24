@@ -25,7 +25,8 @@ The main menu contains:
 
 1. **Download books**
 2. **Manage Kindle**
-3. **Exit**
+3. **Run tests**
+4. **Exit**
 
 ## Download books
 
@@ -96,6 +97,9 @@ Folders are created when needed. Relative download, manifest, and Kindle paths a
 .\kindleManager.ps1 -Mode Download
 .\kindleManager.ps1 -Mode Transfer
 
+# Run all offline test scripts
+.\kindleManager.ps1 -Mode Test
+
 # Download three EPUBs from Standard Ebooks
 .\kindleManager.ps1 -Source standard -Format epub -Limit 3
 
@@ -133,7 +137,7 @@ Automatic copying during downloads (`-Kindle`) uses a filesystem path or a detec
 
 | Option | Purpose / default |
 | --- | --- |
-| `-Mode` | `Menu`, `Download`, or `Transfer`; default `Menu` |
+| `-Mode` | `Menu`, `Download`, `Transfer`, or `Test`; default `Menu` |
 | `-Source` | `standard`, `alice`, `globalgrey`, `gutenberg`, `url`, or `manifest` |
 | `-Search` | Optional title substring for Global Grey; title or author substring for Gutenberg. Case-insensitive; used only by these two sources. |
 | `-Url` | Direct HTTP/HTTPS book URL; selects the URL source |
@@ -176,6 +180,8 @@ Save a manifest such as `books.json` beside the script. Replace these placeholde
 A top-level array or a single book object is also accepted. Each entry needs an HTTP/HTTPS URL in `url`, `downloadUrl`, or `download_url`. `title` is optional and otherwise derived from the URL. `format` is optional and inferred from the URL, falling back to EPUB. Per-entry formats are used for manifest downloads; `-Format` does not convert them.
 
 ## Script organization
+
+Choose **Run tests** or run `powershell -NoProfile -File .\kindleManager.ps1 -Mode Test` to execute the `Test*.ps1` files in the `tests` folder beside the script. Each suite runs in its own PowerShell process and reports PASS or FAIL, followed by a total. Command-line test mode returns exit code `1` if any suite fails or no tests are found. The current suites use mocked network/device operations and need no connected Kindle. The optional `tests` folder is required only for this feature.
 
 All implementation code stays in `kindleManager.ps1`, arranged in collapsible `#region` sections for configuration, shared helpers, downloads, Kindle operations, and menu routing. Shared functions avoid duplicate implementations. Manage Kindle labels and actions are defined together in `$ManageActions`.
 

@@ -8,7 +8,7 @@ Download books and manage a Kindle from one self-contained script.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Menu', 'Download', 'Transfer')]
+    [ValidateSet('Menu', 'Download', 'Transfer', 'Test')]
     [string]$Mode = 'Menu',
 
     [ValidateSet('standard', 'alice', 'globalgrey', 'gutenberg', 'url', 'manifest')]
@@ -3827,9 +3827,47 @@ function Invoke-KindleTransfer {
 }
 #endregion
 
+#region Test runner
+function Invoke-KindleTests {
+    $testFolder = Join-Path $script:ProjectRoot 'tests'
+    $testFiles = @(Get-ChildItem -LiteralPath $testFolder -Filter 'Test*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+    if ($testFiles.Count -eq 0) {
+        Write-ErrMsg "No test scripts found in $testFolder. Keep the tests folder beside kindleManager.ps1 to use this option."
+        return $false
+    }
+
+    # Each suite gets a fresh process so its mocked functions cannot affect the app.
+    $engineName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
+    $engine = Join-Path $PSHOME $engineName
+    $passed = 0
+    foreach ($testFile in $testFiles) {
+        Write-Step "Running $($testFile.Name)"
+        try {
+            & $engine -NoProfile -NonInteractive -File $testFile.FullName | Out-Host
+            if ($LASTEXITCODE -eq 0) {
+                $passed++
+                Write-Success "PASS: $($testFile.Name)"
+            } else {
+                Write-ErrMsg "FAIL: $($testFile.Name) (exit code $LASTEXITCODE)"
+            }
+        } catch {
+            Write-ErrMsg "FAIL: $($testFile.Name): $($_.Exception.Message)"
+        }
+    }
+    Write-Step 'Test results'
+    Write-Success "Passed: $passed / $($testFiles.Count)"
+    if ($passed -ne $testFiles.Count) { Write-ErrMsg "Failed: $($testFiles.Count - $passed)" }
+    return ($passed -eq $testFiles.Count)
+}
+#endregion
+
 #region Main menu and command-line routing
 # Dot-sourcing loads the functions without opening the interactive menu.
 if ($MyInvocation.InvocationName -eq '.') { return }
+if ($Mode -eq 'Test') {
+    if (-not (Invoke-KindleTests)) { exit 1 }
+    return
+}
 $downloadArguments = @{}
 foreach ($key in $PSBoundParameters.Keys) {
     if ($key -ne 'Mode') { $downloadArguments[$key] = $PSBoundParameters[$key] }
@@ -3843,6 +3881,7 @@ if ($Mode -eq 'Download' -or $downloadArguments.Count -gt 0) {
         Write-Host 'Kindle Manager: run without arguments for the main menu.'
         Write-Host '  -Mode Transfer    Open the Kindle USB / MTP file manager'
         Write-Host '  -Mode Download    Open the book downloader'
+        Write-Host '  -Mode Test        Run the offline test scripts'
     }
     Invoke-BookDownloader @downloadArguments
     return
@@ -3852,13 +3891,15 @@ while ($true) {
     Write-Host 'Kindle Manager' -ForegroundColor Cyan
     Write-Host '  1. Download books'
     Write-Host '  2. Manage Kindle'
-    Write-Host '  3. Exit'
+    Write-Host '  3. Run tests'
+    Write-Host '  4. Exit'
     $selection = Read-Host 'Choose an option'
     try {
         switch ($selection) {
             '1' { Invoke-BookDownloader }
             '2' { Invoke-KindleTransfer }
-            '3' { return }
+            '3' { $null = Invoke-KindleTests; Pause-Screen }
+            '4' { return }
             default { Write-Host 'Invalid option.' -ForegroundColor Yellow }
         }
     } catch {
