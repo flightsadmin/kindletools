@@ -999,8 +999,6 @@ function Test-KindlePath([string]$KindlePath) {
 function Copy-ToKindle {
     param(
         [string]$Source,
-
-    [string]$Search,
         [string]$KindlePath
     )
     Ensure-Directory $KindlePath
@@ -1010,6 +1008,25 @@ function Copy-ToKindle {
     }
     Copy-Item -LiteralPath $Source -Destination $dest -Force
     return $dest
+}
+
+function Copy-ToKindleMtp {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)]$Documents
+    )
+    $name = [IO.Path]::GetFileName($Source)
+    $existing = Find-MtpItem -Folder $Documents -Name $name
+    if ($null -ne $existing) {
+        if ($existing.IsFolder) { throw "Kindle destination is a folder: $name" }
+        $existing.InvokeVerb('delete')
+        Start-Sleep -Seconds 2
+    }
+    $Documents.CopyHere($Source, 20)
+    if (-not (Wait-ForMtpItem -Folder $Documents -Name $name -TimeoutSeconds 45)) {
+        throw "Could not verify $name on the Kindle."
+    }
+    return (Get-KindlePath + '\' + $name)
 }
 #endregion
 
@@ -1390,11 +1407,22 @@ function Invoke-DownloadWorkflow {
     Write-Success "Backup folder: $($Script:BACKUP_DIR)"
 
     $kindlePath = $null
+    $kindleMtpDocuments = $null
     if ($options.Kindle) {
         $kindlePath = Get-ResolvedKindlePath -Options $options
         if (-not $kindlePath) {
-            Write-WarnMsg 'Kindle was not detected.'
-            Write-Host 'Continuing without Kindle copying.'
+            try {
+                $Shell = New-Object -ComObject Shell.Application
+                $kindleMtpDocuments = Get-KindleDocuments
+            } catch {
+                $kindleMtpDocuments = $null
+            }
+            if ($null -ne $kindleMtpDocuments) {
+                Write-Success "Kindle detected through MTP: $(Get-KindlePath)"
+            } else {
+                Write-WarnMsg 'Kindle was not detected as a drive or MTP device.'
+                Write-Host 'Continuing without Kindle copying.'
+            }
         } else {
             $kt = Test-KindlePath $kindlePath
             if (-not $kt.Ok) {
@@ -1471,9 +1499,13 @@ function Invoke-DownloadWorkflow {
             Save-DownloadRecord -Source $options.Source -Book $book -Filename $finalFilename -Format $format -Size $item.Length
 
             $kindleDest = $null
-            if ($kindlePath) {
+            if ($kindlePath -or $kindleMtpDocuments) {
                 try {
-                    $kindleDest = Copy-ToKindle -Source $destination -KindlePath $kindlePath
+                    if ($kindlePath) {
+                        $kindleDest = Copy-ToKindle -Source $destination -KindlePath $kindlePath
+                    } else {
+                        $kindleDest = Copy-ToKindleMtp -Source $destination -Documents $kindleMtpDocuments
+                    }
                     Write-Success "Copied to Kindle: $kindleDest"
                 } catch {
                     Write-WarnMsg "Kindle copy failed: $($_.Exception.Message)"
@@ -2147,7 +2179,9 @@ function Wait-ForMtpItem {
         [Parameter(Mandatory)]
         [string]$Name,
 
-        [int]$TimeoutSeconds = 45
+        [int]$TimeoutSeconds = 45,
+
+        [int]$IntervalMilliseconds = 750
     )
 
     $Start = Get-Date
@@ -2173,7 +2207,7 @@ function Wait-ForMtpItem {
             return $false
         }
 
-        Start-Sleep -Milliseconds $VerificationIntervalMs
+        Start-Sleep -Milliseconds $IntervalMilliseconds
     }
 }
 
