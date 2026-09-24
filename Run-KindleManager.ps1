@@ -13,7 +13,9 @@ $scriptUrl = 'https://github.com/flightsadmin/kindletools/raw/main/KindleManager
 Write-Host 'Downloading Kindle Manager...' -ForegroundColor Cyan
 $source = Invoke-RestMethod -Uri $scriptUrl -UseBasicParsing
 
-# Windows PowerShell 5.1 needs the downloaded parameterized script wrapped
-# inside a script block before it can be evaluated from a text stream.
-$wrappedSource = "& {`r`n$source`r`n}"
-& ([scriptblock]::Create($wrappedSource))
+# Save the manager beside the current folder, then run it as a normal .ps1.
+# This avoids Windows PowerShell 5.1 parsing limitations with in-memory scripts.
+$target = Join-Path (Get-Location).Path 'KindleManager.ps1'
+Set-Content -LiteralPath $target -Value $source -Encoding UTF8
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $target
+exit $LASTEXITCODE

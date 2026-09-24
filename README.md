@@ -27,7 +27,7 @@ You can also run the published script directly from GitHub. Open PowerShell in t
 irm https://github.com/flightsadmin/kindletools/raw/main/Run-KindleManager.ps1 | iex
 ```
 
-When launched this way, the current PowerShell folder becomes the application folder. The bootstrap downloads `KindleManager.ps1` and starts it without changing your execution policy or installing anything. The **Run tests** option requires a local clone because the test files are separate from the script.
+When launched this way, the current PowerShell folder becomes the application folder. The bootstrap saves `KindleManager.ps1` there and starts it with a temporary execution-policy bypass. It does not change your system policy or install anything. The **Run tests** option requires a local clone because the test files are separate from the script.
 
 For a local checkout, double-click `Run-KindleManager.cmd` if available, or run `powershell -NoProfile -File .\KindleManager.ps1`.
 
