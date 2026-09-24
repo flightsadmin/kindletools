@@ -28,7 +28,7 @@ param(
     [ValidateSet('pdf', 'epub', 'mobi', 'kindle')]
     [string]$Format = 'pdf',
 
-    [int]$Delay = 1000,
+    [int]$Delay = 2000,
 
     [int]$Limit = 3,   # 0 = unlimited
 
@@ -3994,4 +3994,5 @@ while ($true) {
     }
 }
 #endregion
+
 
