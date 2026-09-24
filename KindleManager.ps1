@@ -48,7 +48,12 @@ param(
 
 #region Configuration
 # Data folders always live beside this script, regardless of the working directory.
-$script:ProjectRoot = $PSScriptRoot
+$script:ProjectRoot = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+    $PSScriptRoot
+} else {
+    # Supports: irm <raw-url> | iex
+    (Get-Location).Path
+}
 $script:BOOKS_DIR = Join-Path $script:ProjectRoot 'books'
 $script:BACKUP_DIR = Join-Path $script:ProjectRoot 'backup'
 $script:DOWNLOAD_RECORDS_DIR = Join-Path $script:ProjectRoot 'downloads'
