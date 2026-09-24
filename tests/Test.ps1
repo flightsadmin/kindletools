@@ -103,7 +103,6 @@ try {
     Push-Location ([IO.Path]::GetTempPath())
     try {
         & (Join-Path $root 'kindleManager.ps1') -Help
-        & (Join-Path $root 'book_downloader.ps1') -Help
     } finally { Pop-Location }
     Write-Host 'All offline Kindle Manager checks passed.' -ForegroundColor Green
 } finally {

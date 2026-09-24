@@ -11,8 +11,10 @@ param(
     [ValidateSet('Menu', 'Download', 'Transfer')]
     [string]$Mode = 'Menu',
 
-    [ValidateSet('standard', 'alice', 'url', 'manifest')]
+    [ValidateSet('standard', 'alice', 'globalgrey', 'gutenberg', 'url', 'manifest')]
     [string]$Source,
+
+    [string]$Search,
 
     [string]$Url,
 
@@ -255,11 +257,14 @@ Portable legal/authorized book downloader (PowerShell).
 SOURCES
   standard           Download from Standard Ebooks (default in interactive)
   alice              Download from AliceAndBooks
+  globalgrey         Fiction from Global Grey (PDF, EPUB, AZW3)
+  gutenberg          English fiction from Project Gutenberg (EPUB, Kindle)
   url                Download from a direct authorized URL
   manifest           Download from a JSON manifest
 
 OPTIONS
-  -Source <source>       standard | alice | url | manifest
+  -Source <source>       standard | alice | globalgrey | gutenberg | url | manifest
+  -Search <text>        Title filter for Global Grey; title/author for Gutenberg
   -Url <url>             Direct authorized book URL (sets source=url)
   -Manifest <file>       JSON manifest file (sets source=manifest)
   -Output <folder>       Download destination (default: ./books)
@@ -605,6 +610,84 @@ function Build-AliceDownloadList {
     return $downloads
 }
 
+function Build-GutenbergDownloadList {
+    param($Options)
+    $format = Normalize-Format $Options.Format
+    if ($format -eq 'pdf') {
+        throw 'Project Gutenberg source supports EPUB and Kindle, not PDF. Choose EPUB or use Global Grey for PDF.'
+    }
+    Write-Step 'Reading Project Gutenberg fiction catalogue...'
+    # Official machine-readable metadata avoids scraping the human-facing search pages.
+    $response = Invoke-BookWebRequest -Uri 'https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv' -TimeoutMs $Options.Timeout -Accept 'text/csv'
+    $catalogue = $response.Content | ConvertFrom-Csv
+    $matches = @($catalogue | Where-Object {
+        $_.Type -eq 'Text' -and $_.Language -eq 'en' -and
+        ($_.Subjects -match '\bFiction\b' -or $_.Bookshelves -match '\bFiction\b') -and
+        (-not $Options.Search -or ([string]$_.Title).IndexOf($Options.Search, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+         ([string]$_.Authors).IndexOf($Options.Search, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    })
+    if ($Options.Limit -gt 0) { $matches = @($matches | Select-Object -First $Options.Limit) }
+    foreach ($book in $matches) {
+        $id = [string]$book.'Text#'
+        if ($id -notmatch '^\d+$') { continue }
+        $suffix = if ($format -eq 'epub') { 'images.epub' } else { 'images-kf8.mobi' }
+        [pscustomobject]@{
+            Title = ($book.Title -replace '\s+', ' ').Trim()
+            Url = "https://www.gutenberg.org/cache/epub/$id/pg$id-$suffix"
+            Format = $format
+            Extension = $format
+        }
+    }
+}
+
+function Get-GlobalGreyDownload {
+    param([string]$PageUrl, [string]$Title, $Options)
+    $response = Invoke-BookWebRequest -Uri $PageUrl -TimeoutMs $Options.Timeout -Accept 'text/html'
+    $format = Normalize-Format $Options.Format
+    $extension = if ($format -eq 'mobi') { 'azw3' } else { $format }
+    foreach ($link in (Get-HtmlLinks -Html $response.Content -BaseUrl $PageUrl)) {
+        $uri = [uri]$link.Url
+        if ($uri.Host -eq 'www.globalgreyebooks.com' -and $uri.AbsolutePath -match "\.$extension`$") {
+            return [pscustomobject]@{ Title = $Title; Url = $link.Url; Format = $format; Extension = $extension }
+        }
+    }
+    throw "No $extension download found for $Title."
+}
+
+function Build-GlobalGreyDownloadList {
+    param($Options)
+    Write-Step 'Reading Global Grey fiction catalogue...'
+    $url = 'https://www.globalgreyebooks.com/category/ebooks/fiction-page-1.html'
+    $seenPages = @{}
+    $seenBooks = @{}
+    $count = 0
+    while ($url -and -not $seenPages.ContainsKey($url)) {
+        $seenPages[$url] = $true
+        $response = Invoke-BookWebRequest -Uri $url -TimeoutMs $Options.Timeout -Accept 'text/html'
+        $links = @(Get-HtmlLinks -Html $response.Content -BaseUrl $url)
+        foreach ($link in $links) {
+            $uri = [uri]$link.Url
+            if ($uri.Host -ne 'www.globalgreyebooks.com' -or $uri.AbsolutePath -notmatch '-ebook\.html$' -or
+                -not $link.Text -or $seenBooks.ContainsKey($link.Url)) { continue }
+            $seenBooks[$link.Url] = $true
+            if ($Options.Search -and $link.Text.IndexOf($Options.Search, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+            Start-Sleep -Milliseconds ([Math]::Max(1000, $Options.Delay))
+            try {
+                $book = Get-GlobalGreyDownload -PageUrl $link.Url -Title $link.Text -Options $Options
+                $book
+                $count++
+                if ($Options.Limit -gt 0 -and $count -ge $Options.Limit) { return }
+            } catch { Write-WarnMsg $_.Exception.Message }
+        }
+        $next = $links | Where-Object {
+            $_.Text -eq 'Next' -and ([uri]$_.Url).Host -eq 'www.globalgreyebooks.com' -and
+            ([uri]$_.Url).AbsolutePath -match '^/category/ebooks/fiction-page-\d+\.html$'
+        } | Select-Object -First 1
+        $url = if ($next) { $next.Url } else { $null }
+        if ($url) { Start-Sleep -Milliseconds ([Math]::Max(1000, $Options.Delay)) }
+    }
+}
+
 function Build-UrlDownloadList {
     param($Options)
 
@@ -703,6 +786,8 @@ function Build-DownloadList {
     switch ($Options.Source) {
         'standard' { return Build-StandardDownloadList -Options $Options }
         'alice'    { return Build-AliceDownloadList -Options $Options }
+        'globalgrey' { return Build-GlobalGreyDownloadList -Options $Options }
+        'gutenberg' { return Build-GutenbergDownloadList -Options $Options }
         'url'      { return Build-UrlDownloadList -Options $Options }
         'manifest' { return Build-ManifestDownloadList -Options $Options }
         default    { throw "Unsupported source: $($Options.Source)" }
@@ -857,6 +942,8 @@ function Test-KindlePath([string]$KindlePath) {
 function Copy-ToKindle {
     param(
         [string]$Source,
+
+    [string]$Search,
         [string]$KindlePath
     )
     Ensure-Directory $KindlePath
@@ -882,8 +969,10 @@ function Invoke-Interactive {
     $source = Read-Choice -Prompt '1 / 4  Download source' -DefaultKey '1' -Choices @(
         @{ Key = '1'; Label = 'Standard Ebooks (public domain, high quality)'; Value = 'standard' }
         @{ Key = '2'; Label = 'AliceAndBooks'; Value = 'alice' }
-        @{ Key = '3'; Label = 'Direct authorized URL'; Value = 'url' }
-        @{ Key = '4'; Label = 'JSON manifest file'; Value = 'manifest' }
+        @{ Key = '3'; Label = 'Global Grey (fiction: PDF, EPUB, Kindle)'; Value = 'globalgrey' }
+        @{ Key = '4'; Label = 'Project Gutenberg (English fiction: EPUB, Kindle)'; Value = 'gutenberg' }
+        @{ Key = '5'; Label = 'Direct authorized URL'; Value = 'url' }
+        @{ Key = '6'; Label = 'JSON manifest file'; Value = 'manifest' }
     )
 
     $url = $null
@@ -906,11 +995,22 @@ function Invoke-Interactive {
         }
     }
 
-    $format = Read-Choice -Prompt '2 / 4  Book format' -DefaultKey '1' -Choices @(
+    $search = $Base.Search
+    if ($source -in @('globalgrey', 'gutenberg')) {
+        $search = (Read-DownloadInput "Title filter (ENTER = all; current: $search)").Trim()
+    }
+    $formatChoices = @(
         @{ Key = '1'; Label = 'PDF (where available)'; Value = 'pdf' }
         @{ Key = '2'; Label = 'EPUB'; Value = 'epub' }
-        @{ Key = '3'; Label = 'MOBI / Kindle (azw3 on Standard Ebooks)'; Value = 'mobi' }
+        @{ Key = '3'; Label = 'MOBI / Kindle (AZW3 on Standard Ebooks and Global Grey)'; Value = 'mobi' }
     )
+
+    $defaultFormat = '1'
+    if ($source -in @('standard', 'gutenberg')) {
+        $formatChoices = @($formatChoices | Where-Object { $_.Value -ne 'pdf' })
+        $defaultFormat = '2'
+    }
+    $format = Read-Choice -Prompt '2 / 4  Book format' -DefaultKey $defaultFormat -Choices $formatChoices
 
     Write-Host ''
     Write-Host '3 / 4  Download limit' -ForegroundColor Cyan
@@ -942,6 +1042,7 @@ function Invoke-Interactive {
     Write-Host '------------------------------------------------------------' -ForegroundColor DarkCyan
     Write-Host ' REVIEW DOWNLOAD SETTINGS' -ForegroundColor Cyan
     Write-DownloadSetting 'Source' $source
+    if ($search) { Write-DownloadSetting 'Search' $search }
     if ($url) { Write-DownloadSetting 'URL' $url }
     if ($manifest) { Write-DownloadSetting 'Manifest' $manifest }
     Write-DownloadSetting 'Format' $format.ToUpperInvariant()
@@ -962,6 +1063,7 @@ function Invoke-Interactive {
 
     return [pscustomobject]@{
         Source     = $source
+        Search     = $search
         Url        = $url
         Manifest   = $manifest
         Output     = $(if ($Base.Output) { $Base.Output } else { $Script:BOOKS_DIR })
@@ -1011,6 +1113,18 @@ function Invoke-DryRun {
     }
 
     Write-Step 'Testing selected source...'
+    if ($Options.Source -in @('globalgrey', 'gutenberg')) {
+        $sampleOptions = $Options.PSObject.Copy()
+        $sampleOptions.Limit = if ($Options.Limit -gt 0) { [Math]::Min($Options.Limit, 5) } else { 5 }
+        $sample = @(Build-DownloadList -Options $sampleOptions)
+        if ($sample.Count -eq 0) { Write-WarnMsg 'No matching books found.' }
+        foreach ($book in $sample) {
+            $check = Test-BookUrl -Uri $book.Url -TimeoutMs $Options.Timeout
+            if ($check.Ok) { Write-Success "$($book.Title) -> $($book.Extension.ToUpperInvariant())" }
+            else { Write-WarnMsg "$($book.Title): $($check.Message)" }
+            Start-Sleep -Milliseconds ([Math]::Max(2000, $Options.Delay))
+        }
+    }
 
     if ($Options.Source -eq 'standard') {
         $st = Test-BookUrl -Uri $Script:STANDARD_EBOOKS_URL -TimeoutMs $Options.Timeout
@@ -1140,6 +1254,7 @@ function Invoke-DownloadWorkflow {
     # Normalize initial param-based options
     $options = [pscustomobject]@{
         Source     = $Source
+        Search     = $Search
         Url        = $Url
         Manifest   = $Manifest
         Output     = $(if ($Output) { Resolve-PortablePath $Output } else { $Script:BOOKS_DIR })
@@ -1175,8 +1290,11 @@ function Invoke-DownloadWorkflow {
         }
     }
 
+    if ($options.Source -eq 'gutenberg') { $options.Delay = [Math]::Max(2000, $options.Delay) }
+    if ($options.Source -eq 'globalgrey') { $options.Delay = [Math]::Max(1000, $options.Delay) }
+
     # Validate
-    if ($options.Source -notin @('standard', 'alice', 'url', 'manifest')) {
+    if ($options.Source -notin @('standard', 'alice', 'globalgrey', 'gutenberg', 'url', 'manifest')) {
         Write-ErrMsg "Unsupported source `"$($options.Source)`"."
         throw 'Invalid download options.'
     }
@@ -3583,8 +3701,10 @@ function Show-MainMenu {
 function Invoke-BookDownloader {
     [CmdletBinding()]
     param(
-        [ValidateSet('standard', 'alice', 'url', 'manifest')]
+        [ValidateSet('standard', 'alice', 'globalgrey', 'gutenberg', 'url', 'manifest')]
         [string]$Source,
+
+    [string]$Search,
 
         [string]$Url,
 
