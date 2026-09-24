@@ -21,14 +21,15 @@ Open PowerShell in the folder containing the script:
 powershell -NoProfile -File .\KindleManager.ps1
 ```
 
-You can also run the published script directly from GitHub. Open PowerShell in the folder where you want `books`, `backup`, and `downloads` created, then run:
+You can also run the published script directly from GitHub. Open PowerShell in the folder where you want `books`, `backup`, and `downloads` created, then run this one line:
 
 ```powershell
-$remoteScript = irm https://github.com/flightsadmin/kindletools/raw/main/KindleManager.ps1
-& ([scriptblock]::Create($remoteScript))
+irm https://github.com/flightsadmin/kindletools/raw/main/Run-KindleManager.ps1 | iex
 ```
 
-When launched this way, the current PowerShell folder becomes the application folder. The **Run tests** option requires a local clone because the test files are separate from the script.
+When launched this way, the current PowerShell folder becomes the application folder. The bootstrap downloads `KindleManager.ps1` and starts it without changing your execution policy or installing anything. The **Run tests** option requires a local clone because the test files are separate from the script.
+
+For a local checkout, double-click `Run-KindleManager.cmd` if available, or run `powershell -NoProfile -File .\KindleManager.ps1`.
 
 The main menu contains:
 
