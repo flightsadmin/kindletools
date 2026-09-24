@@ -840,7 +840,8 @@ function Save-DownloadRecord {
     param([string]$Source, $Book, [string]$Filename, [string]$Format, [Int64]$Size)
     Ensure-Directory $script:DOWNLOAD_RECORDS_DIR
     $path = Get-DownloadRecordPath $Source
-    $records = @(Read-DownloadRecords -Source $Source).Values
+    $recordTable = Read-DownloadRecords -Source $Source
+    $records = @($recordTable.Values)
     $records = @($records | Where-Object { $_.filename -ine $Filename })
     $records += [pscustomobject]@{ title = [string]$Book.Title; url = [string]$Book.Url; filename = $Filename; format = $Format; size = $Size; downloadedAt = (Get-Date).ToUniversalTime().ToString('o') }
     [pscustomobject]@{ source = $Source; records = @($records | Sort-Object filename) } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path -Encoding UTF8
@@ -1404,7 +1405,11 @@ function Invoke-DownloadWorkflow {
     Write-Step "Building download list from $($options.Source)..."
     $existingNames = Get-ExistingBookNames -Output $options.Output
     $downloadRecords = Read-DownloadRecords -Source $options.Source
-    foreach ($recordName in $downloadRecords.Keys) { $existingNames[$recordName] = $true }
+    foreach ($recordName in $downloadRecords.Keys) {
+        if (Test-Path -LiteralPath (Join-Path $options.Output $recordName) -PathType Leaf) {
+            $existingNames[$recordName] = $true
+        }
+    }
     $options | Add-Member -NotePropertyName ExistingNames -NotePropertyValue $existingNames -Force
     $options | Add-Member -NotePropertyName CandidateLimit -NotePropertyValue $(if ($options.Limit -gt 0) { [Math]::Max($options.Limit * 5, 25) } else { 0 }) -Force
     $downloads = @(Build-DownloadList -Options $options)
@@ -1421,7 +1426,9 @@ function Invoke-DownloadWorkflow {
         $available.Add($candidate)
         if ($options.Limit -gt 0 -and $available.Count -ge $options.Limit) { break }
     }
-    $downloads = @($available)
+    # Windows PowerShell 5.1 throws "Argument types do not match" when an
+    # array subexpression wraps a generic List[object]. Convert explicitly.
+    $downloads = $available.ToArray()
     if ($skippedExisting -gt 0) { Write-WarnMsg "Skipped $skippedExisting book(s) already present in $($options.Output)." }
 
     if ($downloads.Count -eq 0) {
