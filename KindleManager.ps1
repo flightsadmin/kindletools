@@ -1720,6 +1720,18 @@ function Get-MtpItemType {
     return "File"
 }
 
+function ConvertFrom-MtpSizeText {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return 0 }
+    $text = $Value.Trim().ToUpperInvariant().Replace(',', '')
+    if ($text -match '([0-9\.]+)\s*TB') { return ([double]$matches[1] * 1TB) }
+    if ($text -match '([0-9\.]+)\s*GB') { return ([double]$matches[1] * 1GB) }
+    if ($text -match '([0-9\.]+)\s*MB') { return ([double]$matches[1] * 1MB) }
+    if ($text -match '([0-9\.]+)\s*KB') { return ([double]$matches[1] * 1KB) }
+    if ($text -match '([0-9\.]+)\s*BYTES?') { return [double]$matches[1] }
+    return 0
+}
+
 function Get-MtpFileSize {
     param(
         $Documents,
@@ -1735,42 +1747,17 @@ function Get-MtpFileSize {
     }
 
     try {
-        # Windows Shell details column.
-        # On most Windows systems column 1 is Size.
-
-        $SizeText = $Documents.GetDetailsOf($Item, 1)
-
-        if ([string]::IsNullOrWhiteSpace($SizeText)) {
-            return 0
+        # MTP devices can place Size in a different Shell column.
+        for ($column = 0; $column -lt 40; $column++) {
+            $header = $Documents.GetDetailsOf($null, $column)
+            if ([string]$header -match '(?i)size') {
+                $size = ConvertFrom-MtpSizeText ($Documents.GetDetailsOf($Item, $column))
+                if ($size -gt 0) { return $size }
+            }
         }
 
-        $Text = $SizeText.Trim().ToUpper()
-
-        $Text = $Text.Replace(",", "")
-
-        if ($Text -match "([0-9\.]+)\s*TB") {
-            return ([double]$matches[1] * 1TB)
-        }
-
-        if ($Text -match "([0-9\.]+)\s*GB") {
-            return ([double]$matches[1] * 1GB)
-        }
-
-        if ($Text -match "([0-9\.]+)\s*MB") {
-            return ([double]$matches[1] * 1MB)
-        }
-
-        if ($Text -match "([0-9\.]+)\s*KB") {
-            return ([double]$matches[1] * 1KB)
-        }
-
-        if ($Text -match "([0-9\.]+)\s*BYTES") {
-            return [double]$matches[1]
-        }
-
-        if ($Text -match "([0-9\.]+)") {
-            return [double]$matches[1]
-        }
+        # Keep the common fallback for devices that expose size only at column 1.
+        return ConvertFrom-MtpSizeText ($Documents.GetDetailsOf($Item, 1))
     }
     catch {
     }
