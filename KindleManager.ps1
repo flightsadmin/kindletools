@@ -15,6 +15,8 @@ param(
 
     [string]$Search,
 
+    [string[]]$Category,
+
     [string]$Url,
 
     [string]$Manifest,
@@ -310,19 +312,20 @@ function Show-Help {
     @"
 
 KindleManager.ps1
-Portable legal/authorized book downloader (PowerShell).
+Portable book downloader (PowerShell).
 
 SOURCES
   standard           Download from Standard Ebooks (default in interactive)
   alice              Download from AliceAndBooks
-  globalgrey         Fiction from Global Grey (PDF, EPUB, AZW3)
-  gutenberg          English fiction from Project Gutenberg (EPUB, Kindle)
+  globalgrey         Fiction / Sci-Fi catalogue from Global Grey (PDF, EPUB, AZW3)
+  gutenberg          English books from Project Gutenberg (EPUB, Kindle)
   url                Download from a direct authorized URL
   manifest           Download from a JSON manifest
 
 OPTIONS
   -Source <source>       standard | alice | globalgrey | gutenberg | url | manifest
   -Search <text>        Title filter for Global Grey; title/author for Gutenberg
+  -Category <name>      Fiction, Romance, or Sci-Fi; source-dependent
   -Url <url>             Direct authorized book URL (sets source=url)
   -Manifest <file>       JSON manifest file (sets source=manifest)
   -Output <folder>       Download destination (default: ./books)
@@ -507,13 +510,18 @@ function Get-StandardBooks {
     $page = 1
     $emptyStreak = 0
     $limit = if ($Options.CandidateLimit -gt 0) { $Options.CandidateLimit } elseif ($Options.Limit -gt 0) { $Options.Limit } else { [int]::MaxValue }
-
+    $hasCategoryFilter = @($Options.Category).Count -gt 0
     $bookItemRegex = [regex]'<li\b[^>]*typeof\s*=\s*["'']schema:Book["''][^>]*about\s*=\s*["'']([^"'']+)["''][^>]*>([\s\S]*?)</li>'
     $nameRegex = [regex]'property\s*=\s*["'']schema:name["''][^>]*>([^<]+)<'
+    $subjects = if ($hasCategoryFilter) { @($Options.Category) } else { @('') }
 
-    while ($page -le $maxPages) {
+    foreach ($subject in $subjects) {
+      $page = 1
+      $emptyStreak = 0
+      while ($page -le $maxPages) {
         if (Test-DownloadTimeLimit -Options $Options) { break }
-        $url = "$($Script:STANDARD_EBOOKS_URL)?page=$page"
+        $baseUrl = if ($subject) { "$($Script:STANDARD_URL)/subjects/$subject" } else { $Script:STANDARD_EBOOKS_URL }
+        $url = "${baseUrl}?per-page=48&page=$page"
         try {
             $resp = Invoke-BookWebRequest -Uri $url -Accept 'text/html,application/xhtml+xml' -TimeoutMs $Options.Timeout
         } catch {
@@ -534,7 +542,6 @@ function Get-StandardBooks {
             if ($seen.ContainsKey($pagePath)) { continue }
             $seen[$pagePath] = $true
             $foundOnPage++
-
             $block = $m.Groups[2].Value
             $title = $null
             $nm = $nameRegex.Match($block)
@@ -564,6 +571,7 @@ function Get-StandardBooks {
         if ($Options.Delay -gt 0) {
             Start-Sleep -Milliseconds ([Math]::Min($Options.Delay, 500))
         }
+      }
     }
 
     return $books
@@ -577,7 +585,7 @@ function Build-StandardDownloadList {
         throw 'No books were found on Standard Ebooks.'
     }
 
-    $limit = if ($Options.CandidateLimit -gt 0) { $Options.CandidateLimit } elseif ($Options.Limit -gt 0) { $Options.Limit } else { $books.Count }
+    $limit = if (@($Options.Category).Count -gt 0) { $books.Count } elseif ($Options.CandidateLimit -gt 0) { $Options.CandidateLimit } elseif ($Options.Limit -gt 0) { $Options.Limit } else { $books.Count }
     $selected = $books | Select-Object -First $limit
     $downloads = New-Object System.Collections.Generic.List[object]
 
@@ -603,27 +611,35 @@ function Get-AliceBooks {
     param($Options)
 
     Write-Step 'Reading AliceAndBooks catalogue...'
-    $resp = Invoke-BookWebRequest -Uri $Script:ALICE_URL -Accept 'text/html' -TimeoutMs $Options.Timeout
-    if ($resp.StatusCode -lt 200 -or $resp.StatusCode -ge 300) {
-        throw "AliceAndBooks returned HTTP $($resp.StatusCode)"
-    }
-
-    $links = Get-HtmlLinks -Html $resp.Content -BaseUrl $Script:ALICE_URL
     $books = New-Object System.Collections.Generic.List[object]
     $seen = @{}
 
-        foreach ($link in $links) {
+    $catalogueUrls = if (@($Options.Category).Count -gt 0) { @($Options.Category) } else { @($Script:ALICE_URL) }
+    foreach ($catalogueUrl in $catalogueUrls) {
+        $url = $catalogueUrl
+        $seenPages = @{}
+        $categoryCount = 0
+        while ($url -and -not $seenPages.ContainsKey($url)) {
             if (Test-DownloadTimeLimit -Options $Options) { return $books }
-            if ($link.Url -notmatch '/book/') { continue }
-        $id = Get-AliceBookId $link.Url
-        if (-not $id -or $seen.ContainsKey($id)) { continue }
-        $seen[$id] = $true
-        $title = if ($link.Text) { $link.Text } else { ($id -replace '[-_]+', ' ') }
-        $books.Add([pscustomobject]@{
-            Id      = $id
-            Title   = $title
-            PageUrl = $link.Url
-        })
+            $seenPages[$url] = $true
+            $resp = Invoke-BookWebRequest -Uri $url -Accept 'text/html' -TimeoutMs $Options.Timeout
+            if ($resp.StatusCode -lt 200 -or $resp.StatusCode -ge 300) { throw "AliceAndBooks returned HTTP $($resp.StatusCode)" }
+            $links = @(Get-HtmlLinks -Html $resp.Content -BaseUrl $url)
+            foreach ($link in $links) {
+                if (([uri]$link.Url).Host -ne 'www.aliceandbooks.com' -or $link.Url -notmatch '/book/') { continue }
+                $id = Get-AliceBookId $link.Url
+                if (-not $id -or $seen.ContainsKey($id)) { continue }
+                $seen[$id] = $true
+                $title = if ($link.Text) { $link.Text } else { ($id -replace '[-_]+', ' ') }
+                $books.Add([pscustomobject]@{ Id = $id; Title = $title; PageUrl = $link.Url })
+                $categoryCount++
+                if ($Options.CandidateLimit -gt 0 -and $categoryCount -ge $Options.CandidateLimit) { break }
+            }
+            if ($Options.CandidateLimit -gt 0 -and $categoryCount -ge $Options.CandidateLimit) { break }
+            $next = $links | Where-Object { ([uri]$_.Url).Host -eq 'www.aliceandbooks.com' -and $_.Text -match '^(Next|Older|›|»)' } | Select-Object -First 1
+            $url = if ($next) { $next.Url } else { $null }
+            if ($url) { Start-Sleep -Milliseconds ([Math]::Min([Math]::Max(0, $Options.Delay), 500)) }
+        }
     }
 
     return $books
@@ -667,7 +683,7 @@ function Build-AliceDownloadList {
         throw 'No books were found on AliceAndBooks.'
     }
 
-    $limit = if ($Options.CandidateLimit -gt 0) { $Options.CandidateLimit } elseif ($Options.Limit -gt 0) { $Options.Limit } else { $books.Count }
+    $limit = if (@($Options.Category).Count -gt 0) { $books.Count } elseif ($Options.CandidateLimit -gt 0) { $Options.CandidateLimit } elseif ($Options.Limit -gt 0) { $Options.Limit } else { $books.Count }
     $selected = $books | Select-Object -First $limit
     $downloads = New-Object System.Collections.Generic.List[object]
 
@@ -693,9 +709,23 @@ function Build-GutenbergDownloadList {
     # Official machine-readable metadata avoids scraping the human-facing search pages.
     $response = Invoke-BookWebRequest -Uri 'https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv' -TimeoutMs $Options.Timeout -Accept 'text/csv'
     $catalogue = $response.Content | ConvertFrom-Csv
+    $categoryPatterns = @{
+        'Fiction' = '\bfiction\b'
+        'Romance' = 'romance|love stories'
+        'Sci-Fi' = 'science fiction|\bsci[- ]fi\b'
+    }
+    $selectedCategories = @($Options.Category | Where-Object { $_ -and $categoryPatterns.ContainsKey($_) })
     $matches = @($catalogue | Where-Object {
-        $_.Type -eq 'Text' -and $_.Language -eq 'en' -and
-        ($_.Subjects -match '\bFiction\b' -or $_.Bookshelves -match '\bFiction\b') -and
+        $metadata = "$($_.Subjects);$($_.Bookshelves)"
+        $categoryMatch = $false
+        if ($selectedCategories.Count -gt 0) {
+            foreach ($categoryName in $selectedCategories) {
+                if ($metadata -match $categoryPatterns[$categoryName]) { $categoryMatch = $true; break }
+            }
+        } else {
+            $categoryMatch = $metadata -match '\bFiction\b'
+        }
+        $_.Type -eq 'Text' -and $_.Language -eq 'en' -and $categoryMatch -and
         (-not $Options.Search -or ([string]$_.Title).IndexOf($Options.Search, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
          ([string]$_.Authors).IndexOf($Options.Search, [StringComparison]::OrdinalIgnoreCase) -ge 0)
     })
@@ -729,37 +759,43 @@ function Get-GlobalGreyDownload {
 
 function Build-GlobalGreyDownloadList {
     param($Options)
-    Write-Step 'Reading Global Grey fiction catalogue...'
-    $url = 'https://www.globalgreyebooks.com/category/ebooks/fiction-page-1.html'
+    Write-Step 'Reading Global Grey catalogue...'
+    $selectedCategories = @($Options.Category | Where-Object { $_ })
+    $categoryPages = if ($selectedCategories.Count -gt 0) { $selectedCategories } else { @('https://www.globalgreyebooks.com/category/ebooks/fiction-page-1.html') }
     $seenPages = @{}
     $seenBooks = @{}
-    $count = 0
-    while ($url -and -not $seenPages.ContainsKey($url)) {
-        if (Test-DownloadTimeLimit -Options $Options) { break }
-        $seenPages[$url] = $true
-        $response = Invoke-BookWebRequest -Uri $url -TimeoutMs $Options.Timeout -Accept 'text/html'
-        $links = @(Get-HtmlLinks -Html $response.Content -BaseUrl $url)
-        foreach ($link in $links) {
+    foreach ($categoryPage in $categoryPages) {
+        $url = $categoryPage
+        $categoryCount = 0
+        while ($url -and -not $seenPages.ContainsKey($url)) {
             if (Test-DownloadTimeLimit -Options $Options) { return }
-            $uri = [uri]$link.Url
-            if ($uri.Host -ne 'www.globalgreyebooks.com' -or $uri.AbsolutePath -notmatch '-ebook\.html$' -or
-                -not $link.Text -or $seenBooks.ContainsKey($link.Url)) { continue }
-            $seenBooks[$link.Url] = $true
-            if ($Options.Search -and $link.Text.IndexOf($Options.Search, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
-            Start-Sleep -Milliseconds ([Math]::Max(1000, $Options.Delay))
-            try {
-                $book = Get-GlobalGreyDownload -PageUrl $link.Url -Title $link.Text -Options $Options
-                $book
-                $count++
-                if ($Options.CandidateLimit -gt 0 -and $count -ge $Options.CandidateLimit) { return }
-            } catch { Write-WarnMsg $_.Exception.Message }
+            $seenPages[$url] = $true
+            $response = Invoke-BookWebRequest -Uri $url -TimeoutMs $Options.Timeout -Accept 'text/html'
+            $links = @(Get-HtmlLinks -Html $response.Content -BaseUrl $url)
+            foreach ($link in $links) {
+                if (Test-DownloadTimeLimit -Options $Options) { return }
+                $uri = [uri]$link.Url
+                if ($uri.Host -ne 'www.globalgreyebooks.com' -or $uri.AbsolutePath -notmatch '-ebook\.html$' -or
+                    -not $link.Text -or $seenBooks.ContainsKey($link.Url)) { continue }
+                $seenBooks[$link.Url] = $true
+                if ($Options.Search -and $link.Text.IndexOf($Options.Search, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+                Start-Sleep -Milliseconds ([Math]::Max(1000, $Options.Delay))
+                try {
+                    $book = Get-GlobalGreyDownload -PageUrl $link.Url -Title $link.Text -Options $Options
+                    $book
+                    $categoryCount++
+                    if ($Options.CandidateLimit -gt 0 -and $categoryCount -ge $Options.CandidateLimit) { break }
+                } catch { Write-WarnMsg $_.Exception.Message }
+            }
+            if ($Options.CandidateLimit -gt 0 -and $categoryCount -ge $Options.CandidateLimit) { break }
+            $pathPattern = '^' + [regex]::Escape((([uri]$url).AbsolutePath -replace '\d+\.html$', '')) + '\d+\.html$'
+            $next = $links | Where-Object {
+                $_.Text -eq 'Next' -and ([uri]$_.Url).Host -eq 'www.globalgreyebooks.com' -and
+                ([uri]$_.Url).AbsolutePath -match $pathPattern
+            } | Select-Object -First 1
+            $url = if ($next) { $next.Url } else { $null }
+            if ($url) { Start-Sleep -Milliseconds ([Math]::Max(1000, $Options.Delay)) }
         }
-        $next = $links | Where-Object {
-            $_.Text -eq 'Next' -and ([uri]$_.Url).Host -eq 'www.globalgreyebooks.com' -and
-            ([uri]$_.Url).AbsolutePath -match '^/category/ebooks/fiction-page-\d+\.html$'
-        } | Select-Object -First 1
-        $url = if ($next) { $next.Url } else { $null }
-        if ($url) { Start-Sleep -Milliseconds ([Math]::Max(1000, $Options.Delay)) }
     }
 }
 
@@ -1106,6 +1142,116 @@ function Copy-ToKindleMtp {
 #endregion
 
 #region Download prompts
+function Get-SourceCategoryChoices {
+    param([string]$Source, [int]$TimeoutMs = 30000)
+
+    if ($Source -eq 'gutenberg') {
+        $names = @('Fiction','Romance','Sci-Fi')
+        return @($names | ForEach-Object {
+            [pscustomobject]@{ Label = $_; Value = $_ }
+        })
+    }
+    if ($Source -eq 'standard') {
+        return @(
+            @{ Label='Fiction'; Value='fiction' },
+            @{ Label='Sci-Fi'; Value='science-fiction' }
+        ) | ForEach-Object { [pscustomobject]$_ }
+    }
+
+    if ($Source -eq 'globalgrey') {
+        $indexUrl = 'https://www.globalgreyebooks.com/ebook-categories.html'
+        $response = Invoke-BookWebRequest -Uri $indexUrl -TimeoutMs $TimeoutMs -Accept 'text/html'
+        $choices = New-Object System.Collections.Generic.List[object]
+        foreach ($link in (Get-HtmlLinks -Html $response.Content -BaseUrl $indexUrl)) {
+            $path = ([uri]$link.Url).AbsolutePath
+            if ($path -notmatch '^/category/ebooks/.+-page-1\.html$') { continue }
+            $label = ($link.Text -replace '\s+', ' ').Trim()
+            if ($label -eq 'Fantasy & Sci-Fi') { $label = 'Sci-Fi' }
+            if ($label -eq 'All' -and $path -match '/fiction-page-1\.html$') { $label = 'Fiction' }
+            if ($label -notin @('Fiction','Sci-Fi')) { continue }
+            if (-not ($choices | Where-Object Label -eq $label)) {
+                $choices.Add([pscustomobject]@{ Label = $label; Value = $link.Url })
+            }
+        }
+        if ($choices.Count -gt 0) { return $choices.ToArray() }
+        throw 'Could not read Global Grey category list.'
+    }
+
+    if ($Source -eq 'alice') {
+        $indexUrl = 'https://www.aliceandbooks.com/categories'
+        $response = Invoke-BookWebRequest -Uri $indexUrl -TimeoutMs $TimeoutMs -Accept 'text/html'
+        $choices = New-Object System.Collections.Generic.List[object]
+        foreach ($link in (Get-HtmlLinks -Html $response.Content -BaseUrl $indexUrl)) {
+            $path = ([uri]$link.Url).AbsolutePath.TrimEnd('/')
+            if ($path -notmatch '^/categories/(.+)$') { continue }
+            $segments = $Matches[1] -split '/'
+            if ($segments[-1] -match '^\d+$') { $segments = @($segments | Select-Object -First ($segments.Count - 1)) }
+            if ($segments.Count -eq 0) { continue }
+            $lastSegment = $segments[-1]
+            $label = switch ($lastSegment) {
+                'fiction' { if ($segments.Count -eq 1) { 'Fiction' } else { '' } }
+                'romance' { 'Romance' }
+                { $_ -in @('science-fiction','sci-fi') } { 'Sci-Fi' }
+                default { '' }
+            }
+            if (-not $label) { continue }
+            if (-not ($choices | Where-Object Value -eq $link.Url)) {
+                $choices.Add([pscustomobject]@{ Label = $label; Value = $link.Url })
+            }
+        }
+        if ($choices.Count -gt 0) { return $choices.ToArray() }
+        throw 'Could not read AliceAndBooks category list.'
+    }
+    return @()
+}
+
+function Read-CategorySelection {
+    param([object[]]$Choices, [string[]]$Selected = @(), [string]$Source)
+
+    Write-Host "  $Source categories (choose numbers separated by commas; ENTER keeps defaults):" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $Choices.Count; $i++) {
+        Write-Host ('  [{0}] {1}' -f ($i + 1), $Choices[$i].Label)
+    }
+    Write-Host '  Enter 0 to clear the category filter.' -ForegroundColor Gray
+    while ($true) {
+        $answer = (Read-DownloadInput 'Category numbers').Trim()
+        if (-not $answer) { return @($Selected) }
+        if ($answer -eq '0') { return @() }
+        $indexes = @($answer -split '[,;\s]+' | Where-Object { $_ })
+        $valid = $indexes.Count -gt 0
+        $picked = New-Object System.Collections.Generic.List[string]
+        foreach ($indexText in $indexes) {
+            $index = 0
+            if (-not [int]::TryParse($indexText, [ref]$index) -or $index -lt 1 -or $index -gt $Choices.Count) {
+                $valid = $false
+                break
+            }
+            $value = [string]$Choices[$index - 1].Value
+            if (-not $picked.Contains($value)) { $picked.Add($value) }
+        }
+        if ($valid) { return @($picked) }
+        Write-Host '  Enter valid category numbers separated by commas, or 0 to clear.' -ForegroundColor Red
+    }
+}
+
+function Resolve-CategoryArguments {
+    param([string]$Source, [string[]]$Category, [int]$TimeoutMs = 30000)
+    if (-not $Category -or $Source -notin @('standard','alice','globalgrey','gutenberg')) { return @($Category) }
+    $choices = @(Get-SourceCategoryChoices -Source $Source -TimeoutMs $TimeoutMs)
+    $resolved = New-Object System.Collections.Generic.List[string]
+    foreach ($requested in $Category) {
+        $choice = $choices | Where-Object { $_.Value -eq $requested } | Select-Object -First 1
+        if (-not $choice) {
+            $choice = $choices | Where-Object {
+                $_.Label -eq $requested -or $_.Label.EndsWith(" / $requested", [StringComparison]::OrdinalIgnoreCase)
+            } | Select-Object -First 1
+        }
+        if (-not $choice) { throw "Unknown $Source category: $requested" }
+        if (-not $resolved.Contains([string]$choice.Value)) { $resolved.Add([string]$choice.Value) }
+    }
+    return @($resolved)
+}
+
 function Invoke-Interactive {
     param($Base)
 
@@ -1118,8 +1264,8 @@ function Invoke-Interactive {
     $source = Read-Choice -Prompt '1 / 4  Download source' -DefaultKey '1' -Choices @(
         @{ Key = '1'; Label = 'Standard Ebooks (public domain, high quality)'; Value = 'standard' }
         @{ Key = '2'; Label = 'AliceAndBooks'; Value = 'alice' }
-        @{ Key = '3'; Label = 'Global Grey (fiction: PDF, EPUB, Kindle)'; Value = 'globalgrey' }
-        @{ Key = '4'; Label = 'Project Gutenberg (English fiction: EPUB, Kindle)'; Value = 'gutenberg' }
+        @{ Key = '3'; Label = 'Global Grey (PDF, EPUB, Kindle)'; Value = 'globalgrey' }
+        @{ Key = '4'; Label = 'Project Gutenberg (English catalogue: EPUB, Kindle)'; Value = 'gutenberg' }
         @{ Key = '5'; Label = 'Direct authorized URL'; Value = 'url' }
         @{ Key = '6'; Label = 'JSON manifest file'; Value = 'manifest' }
     )
@@ -1147,6 +1293,18 @@ function Invoke-Interactive {
     $search = $Base.Search
     if ($source -in @('globalgrey', 'gutenberg')) {
         $search = (Read-DownloadInput "Title filter (ENTER = all; current: $search)").Trim()
+    }
+    $categories = @($Base.Category)
+    $categoryLabels = @()
+    if ($source -in @('standard','alice','globalgrey','gutenberg')) {
+        $categoryChoices = @(Get-SourceCategoryChoices -Source $source -TimeoutMs $Base.Timeout)
+        if (-not $categories.Count -and $source -in @('alice','gutenberg','globalgrey')) {
+            $defaultName = 'Fiction'
+            $defaultChoice = $categoryChoices | Where-Object Label -eq $defaultName | Select-Object -First 1
+            if ($defaultChoice) { $categories = @($defaultChoice.Value) }
+        }
+        $categories = Read-CategorySelection -Choices $categoryChoices -Selected $categories -Source $source
+        $categoryLabels = @($categoryChoices | Where-Object { $categories -contains $_.Value } | ForEach-Object { $_.Label })
     }
     $formatChoices = @(
         @{ Key = '1'; Label = 'MOBI / Kindle (AZW3 on Standard Ebooks and Global Grey)'; Value = 'mobi' }
@@ -1191,6 +1349,7 @@ function Invoke-Interactive {
     Write-Host ' REVIEW DOWNLOAD SETTINGS' -ForegroundColor Cyan
     Write-DownloadSetting 'Source' $source
     if ($search) { Write-DownloadSetting 'Search' $search }
+    if ($categoryLabels.Count -gt 0) { Write-DownloadSetting 'Categories' ($categoryLabels -join ', ') }
     if ($url) { Write-DownloadSetting 'URL' $url }
     if ($manifest) { Write-DownloadSetting 'Manifest' $manifest }
     Write-DownloadSetting 'Format' $format.ToUpperInvariant()
@@ -1213,6 +1372,7 @@ function Invoke-Interactive {
     return [pscustomobject]@{
         Source     = $source
         Search     = $search
+        Category   = @($categories)
         Url        = $url
         Manifest   = $manifest
         Output     = $(if ($Base.Output) { $Base.Output } else { $Script:BOOKS_DIR })
@@ -1407,6 +1567,7 @@ function Invoke-DownloadWorkflow {
     $options = [pscustomobject]@{
         Source     = $Source
         Search     = $Search
+        Category   = @($Category)
         Url        = $Url
         Manifest   = $Manifest
         Output     = $(if ($Output) { Resolve-PortablePath $Output } else { $Script:BOOKS_DIR })
@@ -1429,6 +1590,10 @@ function Invoke-DownloadWorkflow {
     if ($Manifest) {
         $options.Source = 'manifest'
         $options.Manifest = Resolve-PortablePath $Manifest
+    }
+
+    if ($Category -and $options.Source) {
+        $options.Category = @(Resolve-CategoryArguments -Source $options.Source -Category $options.Category -TimeoutMs $options.Timeout)
     }
 
     $sourceExplicit = -not [string]::IsNullOrWhiteSpace($Source) -or $Url -or $Manifest
@@ -3936,7 +4101,9 @@ function Invoke-BookDownloader {
         [ValidateSet('standard', 'alice', 'globalgrey', 'gutenberg', 'url', 'manifest')]
         [string]$Source,
 
-    [string]$Search,
+        [string]$Search,
+
+        [string[]]$Category,
 
         [string]$Url,
 
@@ -3971,15 +4138,13 @@ function Invoke-BookDownloader {
 
     $Script:SCRIPT_DIR = $script:ProjectRoot
 
-
-
     $Script:ALICE_URL = 'https://www.aliceandbooks.com'
 
     $Script:STANDARD_URL = 'https://standardebooks.org'
 
     $Script:STANDARD_EBOOKS_URL = "$($Script:STANDARD_URL)/ebooks"
 
-    $Script:USER_AGENT = 'LegalBookDownloader/3.1-ps1 (personal lawful-use downloader)'
+    $Script:USER_AGENT = 'BookDownloader/3.1-ps1 (personal downloader)'
 
     try {
         Invoke-DownloadWorkflow
