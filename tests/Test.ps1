@@ -51,7 +51,29 @@ try {
         if ($null -ne (Get-MtpChildFolder $null 'documents')) { throw 'Disconnected folder should return null.' }
     }
 
-    # Load file helpers in a separate scope to test validated downloads with a fake response.
+    # Standard Ebooks returns a landing page unless its download redirect is followed.
+    & {
+        $script:STANDARD_URL = 'https://standardebooks.org'
+        $destination = Join-Path ([IO.Path]::GetTempPath()) ('kindle-source-test-' + [guid]::NewGuid() + '.epub')
+        function Invoke-BookWebRequest {
+            param($Uri, $TimeoutMs, $OutFile, $Accept)
+            $content = if (([uri]$Uri).Query -eq '?source=download') { 'PK test EPUB response' } else { '<html>Your Download Has Started!</html>' }
+            [IO.File]::WriteAllText($OutFile, $content)
+        }
+        try {
+            $book = Get-StandardDownloadInfo -PagePath '/ebooks/author/title' -PreferredFormat epub
+            Download-BookFile -Uri $book.Url -Destination $destination -Options ([pscustomobject]@{ Retries = 1; Timeout = 1000 })
+            if (-not [IO.File]::ReadAllText($destination).StartsWith('PK')) { throw 'Downloaded the landing page instead of the EPUB.' }
+            $kindle = Get-StandardDownloadInfo -PagePath '/ebooks/author/title' -PreferredFormat mobi
+            if ($kindle.Url -notlike '*.azw3?source=download') { throw 'Kindle format still targets the landing page.' }
+        } finally {
+            foreach ($file in @($destination, "$destination.download")) {
+                if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
+            }
+        }
+    }
+
+    # Test validated downloads with a fake response.
     & {
         $destination = Join-Path ([IO.Path]::GetTempPath()) ('kindle-test-' + [guid]::NewGuid() + '.pdf')
         $options = [pscustomobject]@{ Retries = 1; Timeout = 1000 }

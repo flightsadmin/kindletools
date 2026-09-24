@@ -1,83 +1,170 @@
 # Kindle Manager
 
-Run `powershell -File .\kindleManager.ps1` to choose between downloading books and managing your Kindle (USB / MTP transfers, browsing, and backups). Everything is implemented in this single file; no modules folder is needed. The old `book_downloader.ps1` and `KindleTransfer.ps1` names are optional compatibility shortcuts.
+`kindleManager.ps1` downloads books and manages a connected Kindle from one self-contained PowerShell script. It includes colored prompts, file browsing, transfers, search, backups, and storage information.
 
-Books, backups, and download inventories use folders beside the script. Downloader command-line options remain available:
+## Requirements
+
+- Windows with PowerShell 5.1 or later.
+- Internet access for downloading books and checking download sources.
+- A Kindle connected by USB and visible in File Explorer for the Manage Kindle menu. This menu uses Windows Shell / MTP and expects an `Internal Storage` folder.
+
+No separate modules or package installation are required.
+
+## Start
+
+Open PowerShell in the folder containing the script:
 
 ```powershell
+.\kindleManager.ps1
+
+# Or launch explicitly using Windows PowerShell
+powershell -NoProfile -File .\kindleManager.ps1
+```
+
+The main menu contains:
+
+1. **Download books**
+2. **Manage Kindle**
+3. **Exit**
+
+## Download books
+
+The interactive flow asks for a source, format, maximum number of books, and whether to perform a dry run. Review the settings and confirm to start. Press ENTER to accept the displayed default.
+
+| Source | Description |
+| --- | --- |
+| Standard Ebooks | Downloads EPUB or Kindle AZW3 files from the catalogue. Choose EPUB or MOBI / Kindle; this source does not provide PDF downloads. |
+| AliceAndBooks | Downloads available files from its catalogue in the selected format. Availability depends on the book. |
+| Direct authorized URL | Downloads a book from an HTTP or HTTPS file URL you provide. |
+| JSON manifest | Downloads a list of book URLs from a local JSON file. |
+
+The default format is **PDF**, so explicitly choose **EPUB** or **MOBI / Kindle** when using Standard Ebooks. The script downloads existing files; it does not convert books between formats. Use material you are authorized to download.
+
+By default, downloads are limited to three books, with a one-second delay between books and one attempt per book. Enter `0` for an unlimited count. A dry run checks paths and source availability without saving books or creating folders; catalogue and manifest checks inspect a limited sample.
+
+Downloads are validated before being moved into place. HTML/XML responses are rejected, and PDF/EPUB headers are checked. A successful download replaces an existing file with the same destination name. The script displays successful and failed download totals without maintaining a download-history file.
+
+## Manage Kindle
+
+1. **Send books to Kindle** — find supported files recursively in `books`, then transfer all or selected files to the Kindle documents folder.
+2. **Copy books from Kindle** — copy all or selected documents to the PC books folder.
+3. **Browse Kindle files** — navigate folders, inspect files, copy items to the PC, delete files, or search by filename.
+4. **Backup Kindle** — copy internal storage to a timestamped folder under `backup`.
+5. **Kindle information and storage** — show device details and a file-based storage report. Sizes depend on metadata exposed by Windows Shell.
+6. **Open PC books folder** — open `books` in File Explorer.
+7. **Return to Kindle Manager** — return to the main menu.
+
+Browser commands:
+
+| Input | Action |
+| --- | --- |
+| Number | Open a folder or inspect a file |
+| `B` | Go back |
+| `I` | Show information for a selected item |
+| `C` | Copy an item to the PC |
+| `D` | Delete a selected file, with confirmation |
+| `S` | Search Kindle filenames recursively |
+| `R` | Refresh the current listing |
+| `Q` | Exit the browser |
+
+Transfers copy files as they are; they do not convert formats or guarantee that the Kindle can read every transferred file.
+
+## Folders and paths
+
+```text
+KindleTools/
+  kindleManager.ps1
+  books/                 Default download and PC transfer folder
+  backup/                Timestamped Kindle backups
+```
+
+Folders are created when needed. Relative download, manifest, and Kindle paths are resolved from the script's directory, even when it is launched from another working directory. `-Output` changes the downloader's destination; the Manage Kindle menu continues to use the `books` folder beside the script.
+
+## Command-line examples
+
+```powershell
+# Show help
 .\kindleManager.ps1 -Help
+
+# Open either workflow directly
+.\kindleManager.ps1 -Mode Download
 .\kindleManager.ps1 -Mode Transfer
+
+# Download three EPUBs from Standard Ebooks
 .\kindleManager.ps1 -Source standard -Format epub -Limit 3
+
+# Check Standard Ebooks without saving files
+.\kindleManager.ps1 -Source standard -Format epub -DryRun
+
+# Download up to five PDFs from AliceAndBooks where available
+.\kindleManager.ps1 -Source alice -Format pdf -Limit 5
+
+# Download a direct file URL (replace this placeholder with your book URL)
+.\kindleManager.ps1 -Url 'https://example.org/book.epub' -Format epub
+
+# Download all entries in a manifest to a different folder
+.\kindleManager.ps1 -Manifest .\books.json -Output .\library -Limit 0
+
+# Use three attempts per book and a two-second delay between books
+.\kindleManager.ps1 -Source standard -Format epub -Retries 3 -Delay 2000
+
+# Copy downloads automatically to a Kindle with a drive letter
+.\kindleManager.ps1 -Source standard -Format kindle -Kindle -KindlePath 'E:\documents'
 ```
 
-The script is organized into collapsible `#region` sections:
+Automatic copying during downloads (`-Kindle`) uses a filesystem path or a detected Kindle drive letter. It does not support the File Explorer display path `This PC\Kindle\Internal Storage`. For an MTP Kindle without a drive letter, download the books first, then use **Manage Kindle → Send books to Kindle**.
 
-- Configuration and shared prompts, logging, and file helpers.
-- Download sources, HTTP requests, file validation, prompts, and workflow.
-- Kindle connection, transfers, browsing/search, backups, and information.
-- Application entry points and main menu routing.
+## Options
 
-Shared functions have one implementation. Data paths resolve from the script folder, even when launched from another directory. To add a Manage Kindle option, add its label and action together in `$ManageActions`. Dot-source the script to load its functions without opening the menu.
+| Option | Purpose / default |
+| --- | --- |
+| `-Mode` | `Menu`, `Download`, or `Transfer`; default `Menu` |
+| `-Source` | `standard`, `alice`, `url`, or `manifest` |
+| `-Url` | Direct HTTP/HTTPS book URL; selects the URL source |
+| `-Manifest` | JSON file path; selects the manifest source |
+| `-Output` | Download destination; default `books` beside the script |
+| `-Format` | `pdf`, `epub`, `mobi`, or `kindle`; default `pdf`. `kindle` aliases `mobi`; Standard Ebooks supplies AZW3. |
+| `-Limit` | Maximum books; default `3`; `0` means unlimited |
+| `-Delay` | Milliseconds between books; default `1000` |
+| `-Retries` | Total attempts per book, including the first; default `1` |
+| `-Timeout` | Request timeout in milliseconds; default `30000` |
+| `-DryRun` | Check availability and paths without saving books |
+| `-Kindle` | Copy completed downloads to a filesystem-accessible Kindle |
+| `-KindlePath` | Kindle documents directory; requires `-Kindle`; otherwise auto-detected |
+| `-Interactive` | Open the download prompts even when a source was supplied |
+| `-Help` | Display command-line help |
 
-Run the optional offline regression checks with `powershell -NoProfile -File .\tests\Test-KindleManager.ps1`. They check syntax, prompts, menu dispatch, portable paths, legacy entry points, and valid/invalid download responses. Network responses and Kindle access are mocked; live website and physical device operations require separate testing.
+With no arguments, the main menu opens. Supplying download options opens the downloader directly; without a source, URL, or manifest, it prompts interactively. Interactive prompts select source and format anew. Use a source argument without `-Interactive` for unattended downloads.
 
-# Legal book downloader
+## JSON manifests
 
-`legal_book_downloader.py` downloads public-domain Project Gutenberg ebooks and direct book-file URLs for material you are licensed or otherwise authorized to download. It does not scrape catalogues, bypass access controls, or support shadow libraries.
+Save a manifest such as `books.json` beside the script. Replace these placeholder URLs with actual book-file URLs:
 
-Requires Python 3.9+ and uses only the standard library.
+```json
+{
+  "books": [
+    {
+      "title": "Example Book",
+      "url": "https://example.org/book.epub",
+      "format": "epub"
+    },
+    {
+      "title": "Example Document",
+      "url": "https://example.org/document.pdf",
+      "format": "pdf"
+    }
+  ]
+}
+```
 
-A matching Node.js 18+ implementation is available in `legal_book_downloader.js`. Replace `py .\legal_book_downloader.py` in the examples below with `node .\legal_book_downloader.js`; it uses the same commands, JSON manifests, formats, delays, and Kindle option.
+A top-level array or a single book object is also accepted. Each entry needs an HTTP/HTTPS URL in `url`, `downloadUrl`, or `download_url`. `title` is optional and otherwise derived from the URL. `format` is optional and inferred from the URL, falling back to EPUB. Per-entry formats are used for manifest downloads; `-Format` does not convert them.
+
+## Script organization
+
+All implementation code stays in `kindleManager.ps1`, arranged in collapsible `#region` sections for configuration, shared helpers, downloads, Kindle operations, and menu routing. Shared functions avoid duplicate implementations. Manage Kindle labels and actions are defined together in `$ManageActions`.
+
+Dot-source the script to load its functions without opening a menu:
 
 ```powershell
-# Download Project Gutenberg ebook 1342 (Pride and Prejudice) as EPUB
-py .\legal_book_downloader.py gutenberg 1342
-
-# Choose plain text or Kindle format and a different folder
-py .\legal_book_downloader.py --output .\library gutenberg 1342 --format text
-
-# Create a PDF locally from Gutenberg's plain-text edition
-py .\legal_book_downloader.py --output .\library gutenberg 1342 --format pdf
-
-# Download several Gutenberg books in one command
-py .\legal_book_downloader.py --output .\library gutenberg-batch --format epub 1342 84 11
-
-# Download every Gutenberg book listed in romance_books.json (86 entries)
-# Requests run sequentially with a two-second pause by default.
-py .\legal_book_downloader.py --output .\library json .\romance_books.json --format epub
-
-# With a connected Kindle, copy each completed book into its documents folder
-py .\legal_book_downloader.py --kindle --output .\library json .\romance_books.json --format epub
-
-# Or specify the Kindle documents folder if automatic detection does not find it
-py .\legal_book_downloader.py --kindle E:\documents --output .\library gutenberg 1342 --format epub
-
-# Do not use File Explorer's "This PC\Kindle …" display path. Use --kindle on its
-# own, or replace E: above with the Kindle's actual Windows drive letter.
-
-# Download each public Internet Archive item listed in archive_books.json
-py .\legal_book_downloader.py --output .\library json .\archive_books.json --format pdf
-
-# Test just the first three entries, with a one-second pause
-py .\legal_book_downloader.py --output .\library json .\romance_books.json --format pdf --limit 3 --delay 1
-
-# Download a public Internet Archive item by its identifier
-# (the identifier is the final part of https://archive.org/details/<identifier>)
-py .\legal_book_downloader.py --output .\library archive pride-and-prejudice-pdf --format pdf
-
-# Download several public Internet Archive items in one command
-# Replace item-one and item-two with identifiers that offer the chosen format.
-py .\legal_book_downloader.py --output .\library archive-batch --format pdf item-one item-two
-
-# Node.js only: download all books on an AliceAndBooks catalogue page sequentially
-node .\legal_book_downloader.js --output .\library alice https://www.aliceandbooks.com/books/a --format epub
-
-# Download an openly licensed or personally authorized direct file URL
-py .\legal_book_downloader.py url "https://example.org/book.epub" --authorized
+. .\kindleManager.ps1
 ```
-
-The `url` command expects a direct file URL, rather than a web page that contains a download button.
-
-Project Gutenberg does not offer PDFs for every title. The `pdf` format therefore downloads its UTF-8 plain-text edition and makes a basic, searchable PDF locally; it does not claim to be a publisher-formatted edition.
-
-The `archive` command checks an item's public metadata, refuses items marked access-restricted, and downloads an available EPUB, PDF, or text file. Availability and reuse rights vary by item; check the item's rights statement and your local law before downloading.

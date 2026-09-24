@@ -407,14 +407,15 @@ function Get-StandardDownloadInfo {
 
     if ($fmt -eq 'mobi') {
         return [pscustomobject]@{
-            Url       = "$base/$slug.azw3"
+            # Use the file URL from the site's download-page redirect.
+            Url       = "$base/$slug.azw3?source=download"
             Format    = 'mobi'
             Extension = 'azw3'
         }
     }
 
     return [pscustomobject]@{
-        Url       = "$base/$slug.epub"
+        Url       = "$base/$slug.epub?source=download"
         Format    = 'epub'
         Extension = 'epub'
     }
@@ -976,22 +977,7 @@ function Invoke-Interactive {
 }
 #endregion
 
-#region Download workflow and inventory
-function Write-Inventory {
-    param([object[]]$Records)
-
-    Ensure-Directory $Script:INVENTORY_DIR
-    $inventory = [ordered]@{
-        generatedAt     = (Get-Date).ToUniversalTime().ToString('o')
-        scriptDirectory = $Script:SCRIPT_DIR
-        booksDirectory  = $Script:BOOKS_DIR
-        backupDirectory = $Script:BACKUP_DIR
-        records         = @($Records)
-    }
-    $json = $inventory | ConvertTo-Json -Depth 8
-    Set-Content -LiteralPath $Script:INVENTORY_FILE -Value $json -Encoding UTF8
-}
-
+#region Download workflow
 function Invoke-DryRun {
     param($Options)
 
@@ -1001,7 +987,6 @@ function Invoke-DryRun {
     Write-Host "Script folder: $($Script:SCRIPT_DIR)"
     Write-Host "Books folder:  $($Options.Output)"
     Write-Host "Backup folder: $($Script:BACKUP_DIR)"
-    Write-Host "Inventory:     $($Script:INVENTORY_FILE)"
     Write-Host "Source:        $($Options.Source)"
     Write-Host "Format:        $($Options.Format)"
     Write-Host "Delay:         $($Options.Delay) ms"
@@ -1224,11 +1209,9 @@ function Invoke-DownloadWorkflow {
 
     Ensure-Directory $options.Output
     Ensure-Directory $Script:BACKUP_DIR
-    Ensure-Directory $Script:INVENTORY_DIR
 
     Write-Success "Books folder: $($options.Output)"
     Write-Success "Backup folder: $($Script:BACKUP_DIR)"
-    Write-Success "Inventory folder: $($Script:INVENTORY_DIR)"
 
     $kindlePath = $null
     if ($options.Kindle) {
@@ -1257,7 +1240,8 @@ function Invoke-DownloadWorkflow {
 
     Write-Success "Found $($downloads.Count) book(s) to process."
 
-    $records = New-Object System.Collections.Generic.List[object]
+    $successful = 0
+    $failed = 0
     $index = 0
     foreach ($book in $downloads) {
         $index++
@@ -1298,28 +1282,10 @@ function Invoke-DownloadWorkflow {
                 }
             }
 
-            $records.Add([pscustomobject]@{
-                title        = $book.Title
-                url          = $book.Url
-                format       = $format
-                file         = $destination
-                size         = $item.Length
-                downloadedAt = (Get-Date).ToUniversalTime().ToString('o')
-                kindle       = $kindleDest
-                status       = 'success'
-            })
+            $successful++
         } catch {
             Write-ErrMsg "$($book.Title): $($_.Exception.Message)"
-            $records.Add([pscustomobject]@{
-                title        = $book.Title
-                url          = $book.Url
-                format       = $format
-                file         = $destination
-                downloadedAt = (Get-Date).ToUniversalTime().ToString('o')
-                kindle       = $null
-                status       = 'failed'
-                error        = $_.Exception.Message
-            })
+            $failed++
         }
 
         if ($index -lt $downloads.Count -and $options.Delay -gt 0) {
@@ -1327,15 +1293,11 @@ function Invoke-DownloadWorkflow {
         }
     }
 
-    Write-Inventory -Records $records.ToArray()
 
     Write-Host ''
     Write-Step 'Finished'
-    $successful = @($records | Where-Object { $_.status -eq 'success' }).Count
-    $failed = @($records | Where-Object { $_.status -eq 'failed' }).Count
     Write-Success "Successful: $successful"
     if ($failed -gt 0) { Write-WarnMsg "Failed: $failed" }
-    Write-Success "Inventory: $($Script:INVENTORY_FILE)"
     Write-Host ''
 }
 #endregion
@@ -1646,7 +1608,7 @@ function Get-MtpFileList {
     return $Results
 }
 
-function Get-MtpInventoryRecursive {
+function Get-MtpFolderContentsRecursive {
     param(
         [Parameter(Mandatory)]
         $Folder,
@@ -1682,7 +1644,7 @@ function Get-MtpInventoryRecursive {
                     $ChildFolder = $Item.GetFolder()
 
                     if ($null -ne $ChildFolder) {
-                        Get-MtpInventoryRecursive `
+                        Get-MtpFolderContentsRecursive `
                             -Folder $ChildFolder `
                             -LogicalPath $ItemPath `
                             -Results $Results
@@ -3368,7 +3330,7 @@ function Show-KindleStorage {
     $Results = New-Object `
         System.Collections.Generic.List[object]
 
-    Get-MtpInventoryRecursive `
+    Get-MtpFolderContentsRecursive `
         -Folder $Storage `
         -LogicalPath $(Get-KindleStoragePath) `
         -Results $Results
@@ -3657,9 +3619,7 @@ function Invoke-BookDownloader {
 
     $Script:SCRIPT_DIR = $script:ProjectRoot
 
-    $Script:INVENTORY_DIR = Join-Path $Script:SCRIPT_DIR 'inventory'
 
-    $Script:INVENTORY_FILE = Join-Path $Script:INVENTORY_DIR 'inventory.json'
 
     $Script:ALICE_URL = 'https://www.aliceandbooks.com'
 
