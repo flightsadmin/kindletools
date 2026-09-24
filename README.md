@@ -1,6 +1,6 @@
 # Kindle Manager
 
-Run `powershell -File .\kindleManager.ps1` to choose between downloading books and managing your Kindle (USB / MTP transfers, browsing, and backups). The combined script is standalone; the two original PowerShell scripts are retained.
+Run `powershell -File .\kindleManager.ps1` to choose between downloading books and managing your Kindle (USB / MTP transfers, browsing, and backups). Everything is implemented in this single file; no modules folder is needed. The old `book_downloader.ps1` and `KindleTransfer.ps1` names are optional compatibility shortcuts.
 
 Books, backups, and download inventories use folders beside the script. Downloader command-line options remain available:
 
@@ -9,6 +9,17 @@ Books, backups, and download inventories use folders beside the script. Download
 .\kindleManager.ps1 -Mode Transfer
 .\kindleManager.ps1 -Source standard -Format epub -Limit 3
 ```
+
+The script is organized into collapsible `#region` sections:
+
+- Configuration and shared prompts, logging, and file helpers.
+- Download sources, HTTP requests, file validation, prompts, and workflow.
+- Kindle connection, transfers, browsing/search, backups, and information.
+- Application entry points and main menu routing.
+
+Shared functions have one implementation. Data paths resolve from the script folder, even when launched from another directory. To add a Manage Kindle option, add its label and action together in `$ManageActions`. Dot-source the script to load its functions without opening the menu.
+
+Run the optional offline regression checks with `powershell -NoProfile -File .\tests\Test-KindleManager.ps1`. They check syntax, prompts, menu dispatch, portable paths, legacy entry points, and valid/invalid download responses. Network responses and Kindle access are mocked; live website and physical device operations require separate testing.
 
 # Legal book downloader
 

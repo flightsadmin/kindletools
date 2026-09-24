@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-Download books and manage a Kindle from one standalone script.
+Download books and manage a Kindle from one self-contained script.
 .\kindleManager.ps1
 .\kindleManager.ps1 -Mode Transfer
 .\kindleManager.ps1 -Source standard -Format epub -Limit 3
@@ -42,76 +42,135 @@ param(
     [switch]$Help
 )
 
-function Invoke-BookDownloader {
-[CmdletBinding()]
-param(
-    [ValidateSet('standard', 'alice', 'url', 'manifest')]
-    [string]$Source,
 
-    [string]$Url,
 
-    [string]$Manifest,
+#region Configuration
+# Data folders always live beside this script, regardless of the working directory.
+$script:ProjectRoot = $PSScriptRoot
+$script:BOOKS_DIR = Join-Path $script:ProjectRoot 'books'
+$script:BACKUP_DIR = Join-Path $script:ProjectRoot 'backup'
+#endregion
 
-    [string]$Output,
-
-    [switch]$Kindle,
-
-    [string]$KindlePath,
-
-    [ValidateSet('epub', 'pdf', 'mobi', 'kindle')]
-    [string]$Format = 'pdf',
-
-    [int]$Delay = 1000,
-
-    [int]$Limit = 3,   # 0 = unlimited
-
-    [int]$Retries = 1,
-
-    [int]$Timeout = 30000,
-
-    [switch]$DryRun,
-
-    [switch]$Interactive,
-
-    [switch]$Help
-)
-
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-
-# ============================================================
-# CONSTANTS
-# ============================================================
-$Script:SCRIPT_DIR = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
-$Script:BOOKS_DIR = Join-Path $Script:SCRIPT_DIR 'books'
-$Script:BACKUP_DIR = Join-Path $Script:SCRIPT_DIR 'backup'
-$Script:INVENTORY_DIR = Join-Path $Script:SCRIPT_DIR 'inventory'
-$Script:INVENTORY_FILE = Join-Path $Script:INVENTORY_DIR 'inventory.json'
-$Script:ALICE_URL = 'https://www.aliceandbooks.com'
-$Script:STANDARD_URL = 'https://standardebooks.org'
-$Script:STANDARD_EBOOKS_URL = "$($Script:STANDARD_URL)/ebooks"
-$Script:USER_AGENT = 'LegalBookDownloader/3.1-ps1 (personal lawful-use downloader)'
-
-# ============================================================
-# LOGGING
-# ============================================================
+#region Shared prompts, logging, and file helpers
 function Write-Step([string]$Message) {
     Write-Host ""
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
+
 function Write-Success([string]$Message) {
     Write-Host "✓ $Message" -ForegroundColor Green
 }
+
 function Write-WarnMsg([string]$Message) {
     Write-Host "⚠ $Message" -ForegroundColor Yellow
 }
+
 function Write-ErrMsg([string]$Message) {
     Write-Host "✗ $Message" -ForegroundColor Red
 }
 
-# ============================================================
-# HELPERS
-# ============================================================
+function Ensure-Directory([string]$Directory) {
+    if (-not (Test-Path -LiteralPath $Directory)) {
+        New-Item -ItemType Directory -Path $Directory -Force | Out-Null
+    }
+}
+
+function Read-DownloadInput {
+    param([string]$Prompt)
+    Write-Host "  $Prompt" -ForegroundColor Yellow
+    Write-Host '  > ' -ForegroundColor Cyan -NoNewline
+    return (Read-Host)
+}
+
+function Write-DownloadSetting {
+    param([string]$Label, [string]$Value)
+    Write-Host ('  {0,-12}' -f $Label) -ForegroundColor Gray -NoNewline
+    Write-Host $Value -ForegroundColor Green
+}
+
+function Read-Choice {
+    param(
+        [string]$Prompt,
+        [hashtable[]]$Choices,
+        [string]$DefaultKey
+    )
+
+    Write-Host ''
+    Write-Host $Prompt -ForegroundColor Cyan
+    foreach ($c in $Choices) {
+        $marker = if ($c.Key -eq $DefaultKey) { ' (default)' } else { '' }
+        Write-Host ("  [{0}] " -f $c.Key) -ForegroundColor Yellow -NoNewline
+        Write-Host $c.Label -ForegroundColor White -NoNewline
+        Write-Host $marker -ForegroundColor Green
+    }
+
+    while ($true) {
+        $answer = (Read-DownloadInput "Choose a number (ENTER = $DefaultKey)").Trim()
+        if ([string]::IsNullOrEmpty($answer)) { $answer = $DefaultKey }
+        $found = $Choices | Where-Object { $_.Key -eq $answer } | Select-Object -First 1
+        if ($found) {
+            Write-Host "  Selected: $($found.Label)" -ForegroundColor Green
+            return $found.Value
+        }
+        Write-Host '  Invalid choice. Enter one of the numbers above.' -ForegroundColor Red
+    }
+}
+
+function Read-YesNo {
+    param(
+        [string]$Prompt,
+        [bool]$DefaultYes = $false
+    )
+    $hint = if ($DefaultYes) { 'Y/n' } else { 'y/N' }
+    while ($true) {
+        $answer = (Read-DownloadInput "$Prompt [$hint]").Trim().ToLowerInvariant()
+        if ([string]::IsNullOrEmpty($answer)) { return $DefaultYes }
+        if ($answer -in @('y', 'yes')) { return $true }
+        if ($answer -in @('n', 'no')) { return $false }
+        Write-Host '  Please enter y or n.' -ForegroundColor Red
+    }
+}
+
+function Pause-Screen {
+    Write-Host ""
+    Read-Host "Press ENTER to continue" | Out-Null
+}
+
+function Format-Size {
+    param(
+        [AllowNull()]
+        [double]$Bytes
+    )
+
+    if ($null -eq $Bytes) {
+        return "Unknown"
+    }
+
+    if ($Bytes -lt 0) {
+        return "Unknown"
+    }
+
+    if ($Bytes -ge 1TB) {
+        return "{0:N2} TB" -f ($Bytes / 1TB)
+    }
+
+    if ($Bytes -ge 1GB) {
+        return "{0:N2} GB" -f ($Bytes / 1GB)
+    }
+
+    if ($Bytes -ge 1MB) {
+        return "{0:N2} MB" -f ($Bytes / 1MB)
+    }
+
+    if ($Bytes -ge 1KB) {
+        return "{0:N2} KB" -f ($Bytes / 1KB)
+    }
+
+    return "{0:N0} bytes" -f $Bytes
+}
+#endregion
+
+#region Download helpers and help text
 function Normalize-Format([string]$Format) {
     if ([string]::IsNullOrWhiteSpace($Format)) { return 'pdf' }
     $n = $Format.Trim().ToLowerInvariant().TrimStart('.')
@@ -187,12 +246,6 @@ function Test-HttpUrl([string]$Value) {
     }
 }
 
-function Ensure-Directory([string]$Directory) {
-    if (-not (Test-Path -LiteralPath $Directory)) {
-        New-Item -ItemType Directory -Path $Directory -Force | Out-Null
-    }
-}
-
 function Show-Help {
     @"
 
@@ -232,10 +285,9 @@ EXAMPLES
 
 "@ | Write-Host
 }
+#endregion
 
-# ============================================================
-# HTTP
-# ============================================================
+#region HTTP requests
 function Invoke-BookWebRequest {
     param(
         [Parameter(Mandatory)][string]$Uri,
@@ -298,10 +350,9 @@ function Test-BookUrl {
         }
     }
 }
+#endregion
 
-# ============================================================
-# HTML HELPERS
-# ============================================================
+#region Book sources and manifests
 function Strip-Html([string]$Value) {
     if ([string]::IsNullOrEmpty($Value)) { return '' }
     $t = $Value
@@ -333,9 +384,6 @@ function Get-HtmlLinks {
     return $results
 }
 
-# ============================================================
-# STANDARD EBOOKS
-# ============================================================
 function Get-StandardSlugFromPath([string]$Pathname) {
     $parts = $Pathname.Trim('/').Replace('ebooks/', '') -split '/' | Where-Object { $_ }
     # pathname like /ebooks/author/title/...
@@ -468,9 +516,6 @@ function Build-StandardDownloadList {
     return $downloads
 }
 
-# ============================================================
-# ALICEANDBOOKS
-# ============================================================
 function Get-AliceBookId([string]$Url) {
     if ($Url -match '/book/([^/?#]+)') { return $Matches[1] }
     return $null
@@ -559,9 +604,6 @@ function Build-AliceDownloadList {
     return $downloads
 }
 
-# ============================================================
-# DIRECT URL / MANIFEST
-# ============================================================
 function Build-UrlDownloadList {
     param($Options)
 
@@ -665,12 +707,9 @@ function Build-DownloadList {
         default    { throw "Unsupported source: $($Options.Source)" }
     }
 }
+#endregion
 
-# ============================================================
-# DOWNLOAD
-# ============================================================
-
-
+#region Download validation and file saving
 function Assert-BookFile([string]$Path, [string]$Format) {
     $stream = [IO.File]::OpenRead($Path)
     try {
@@ -684,8 +723,6 @@ function Assert-BookFile([string]$Path, [string]$Format) {
         if ($Format -eq 'epub' -and -not $text.StartsWith('PK')) { throw 'Missing EPUB ZIP header.' }
     } finally { $stream.Dispose() }
 }
-
-
 
 function Download-BookFile {
     param(
@@ -741,10 +778,9 @@ function Download-BookFile {
     $msg = if ($lastError) { $lastError.Exception.Message } else { 'Unknown error' }
     throw "Download failed after $($Options.Retries) attempt(s): $msg"
 }
+#endregion
 
-# ============================================================
-# KINDLE
-# ============================================================
+#region Kindle drive copying
 function Find-KindleWindows {
     if ($env:OS -notmatch 'Windows' -and $PSVersionTable.Platform -and $PSVersionTable.Platform -ne 'Win32NT') {
         return $null
@@ -830,10 +866,117 @@ function Copy-ToKindle {
     Copy-Item -LiteralPath $Source -Destination $dest -Force
     return $dest
 }
+#endregion
 
-# ============================================================
-# INVENTORY
-# ============================================================
+#region Download prompts
+function Invoke-Interactive {
+    param($Base)
+
+    Write-Host ''
+    Write-Host '============================================================' -ForegroundColor DarkCyan
+    Write-Host ' DOWNLOAD BOOKS' -ForegroundColor Cyan
+    Write-Host '============================================================' -ForegroundColor DarkCyan
+    Write-Host ' Press ENTER to accept a default. Uppercase Y/N marks the default.' -ForegroundColor Gray
+
+    $source = Read-Choice -Prompt '1 / 4  Download source' -DefaultKey '1' -Choices @(
+        @{ Key = '1'; Label = 'Standard Ebooks (public domain, high quality)'; Value = 'standard' }
+        @{ Key = '2'; Label = 'AliceAndBooks'; Value = 'alice' }
+        @{ Key = '3'; Label = 'Direct authorized URL'; Value = 'url' }
+        @{ Key = '4'; Label = 'JSON manifest file'; Value = 'manifest' }
+    )
+
+    $url = $null
+    $manifest = $null
+
+    if ($source -eq 'url') {
+        while ($true) {
+            $url = (Read-DownloadInput 'Enter book URL (http/https)').Trim()
+            if (Test-HttpUrl $url) { break }
+            Write-Host '  Must be a valid HTTP or HTTPS URL.' -ForegroundColor Red
+        }
+    }
+
+    if ($source -eq 'manifest') {
+        while ($true) {
+            $raw = (Read-DownloadInput 'Path to JSON manifest file').Trim()
+            $manifest = Resolve-PortablePath $raw
+            if (Test-Path -LiteralPath $manifest) { break }
+            Write-Host "  File not found: $manifest" -ForegroundColor Red
+        }
+    }
+
+    $format = Read-Choice -Prompt '2 / 4  Book format' -DefaultKey '1' -Choices @(
+        @{ Key = '1'; Label = 'PDF (where available)'; Value = 'pdf' }
+        @{ Key = '2'; Label = 'EPUB'; Value = 'epub' }
+        @{ Key = '3'; Label = 'MOBI / Kindle (azw3 on Standard Ebooks)'; Value = 'mobi' }
+    )
+
+    Write-Host ''
+    Write-Host '3 / 4  Download limit' -ForegroundColor Cyan
+    Write-Host '  Enter 0 for unlimited books.' -ForegroundColor Gray
+    while ($true) {
+        $limitRaw = (Read-DownloadInput "Max number of books (ENTER = $($Base.Limit))").Trim()
+        $limit = $Base.Limit
+        if (-not $limitRaw) { break }
+        $n = 0
+        if (-not [int]::TryParse($limitRaw, [ref]$n) -or $n -lt 0) {
+            Write-Host '  Enter a whole number of 0 or more.' -ForegroundColor Red
+            continue
+        }
+        $limit = $n
+        break
+    }
+
+    Write-Host ''
+    Write-Host '4 / 4  Download mode' -ForegroundColor Cyan
+    Write-Host '  Dry-run checks availability without saving books.' -ForegroundColor Gray
+    $dryRun = Read-YesNo -Prompt 'Dry-run only (no downloads)?' -DefaultYes:$false
+    $kindle = $Base.Kindle
+    $kindlePath = $Base.KindlePath
+    $delay = $Base.Delay
+    $retries = $Base.Retries
+    $timeout = $Base.Timeout
+
+    Write-Host ''
+    Write-Host '------------------------------------------------------------' -ForegroundColor DarkCyan
+    Write-Host ' REVIEW DOWNLOAD SETTINGS' -ForegroundColor Cyan
+    Write-DownloadSetting 'Source' $source
+    if ($url) { Write-DownloadSetting 'URL' $url }
+    if ($manifest) { Write-DownloadSetting 'Manifest' $manifest }
+    Write-DownloadSetting 'Format' $format.ToUpperInvariant()
+    Write-DownloadSetting 'Save to' $(if ($Base.Output) { $Base.Output } else { $Script:BOOKS_DIR })
+    Write-DownloadSetting 'Limit' $(if ($limit -gt 0) { $limit } else { 'Unlimited' })
+    Write-DownloadSetting 'Mode' $(if ($dryRun) { 'Dry-run (no downloads)' } else { 'Download books' })
+    Write-DownloadSetting 'Kindle' $(if ($kindle) { if ($kindlePath) { $kindlePath } else { 'Auto-detect' } } else { 'No automatic copy' })
+    Write-DownloadSetting 'Delay' "$delay ms"
+    Write-DownloadSetting 'Attempts' "$retries"
+    Write-DownloadSetting 'Timeout' "$timeout ms"
+    Write-Host '------------------------------------------------------------' -ForegroundColor DarkCyan
+    Write-Host ''
+
+    if (-not (Read-YesNo -Prompt 'Proceed with these settings?' -DefaultYes:$true)) {
+        Write-Host '  Download cancelled.' -ForegroundColor Yellow
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Source     = $source
+        Url        = $url
+        Manifest   = $manifest
+        Output     = $(if ($Base.Output) { $Base.Output } else { $Script:BOOKS_DIR })
+        Kindle     = $kindle
+        KindlePath = $kindlePath
+        Format     = (Normalize-Format $format)
+        Delay      = $delay
+        Limit      = $limit
+        Retries    = $retries
+        Timeout    = $timeout
+        DryRun     = $dryRun
+    }
+}
+#endregion
+
+#region Download workflow and inventory
 function Write-Inventory {
     param([object[]]$Records)
 
@@ -849,9 +992,6 @@ function Write-Inventory {
     Set-Content -LiteralPath $Script:INVENTORY_FILE -Value $json -Encoding UTF8
 }
 
-# ============================================================
-# DRY RUN
-# ============================================================
 function Invoke-DryRun {
     param($Options)
 
@@ -1006,175 +1146,7 @@ function Invoke-DryRun {
     Write-Host 'No files were modified.'
 }
 
-# ============================================================
-# INTERACTIVE
-# ============================================================
-function Read-DownloadInput {
-    param([string]$Prompt)
-    Write-Host "  $Prompt" -ForegroundColor Yellow
-    Write-Host '  > ' -ForegroundColor Cyan -NoNewline
-    return (Read-Host)
-}
-
-function Write-DownloadSetting {
-    param([string]$Label, [string]$Value)
-    Write-Host ('  {0,-12}' -f $Label) -ForegroundColor Gray -NoNewline
-    Write-Host $Value -ForegroundColor Green
-}
-
-function Read-Choice {
-    param(
-        [string]$Prompt,
-        [hashtable[]]$Choices,
-        [string]$DefaultKey
-    )
-
-    Write-Host ''
-    Write-Host $Prompt -ForegroundColor Cyan
-    foreach ($c in $Choices) {
-        $marker = if ($c.Key -eq $DefaultKey) { ' (default)' } else { '' }
-        Write-Host ("  [{0}] " -f $c.Key) -ForegroundColor Yellow -NoNewline
-        Write-Host $c.Label -ForegroundColor White -NoNewline
-        Write-Host $marker -ForegroundColor Green
-    }
-
-    while ($true) {
-        $answer = (Read-DownloadInput "Choose a number (ENTER = $DefaultKey)").Trim()
-        if ([string]::IsNullOrEmpty($answer)) { $answer = $DefaultKey }
-        $found = $Choices | Where-Object { $_.Key -eq $answer } | Select-Object -First 1
-        if ($found) {
-            Write-Host "  Selected: $($found.Label)" -ForegroundColor Green
-            return $found.Value
-        }
-        Write-Host '  Invalid choice. Enter one of the numbers above.' -ForegroundColor Red
-    }
-}
-
-function Read-YesNo {
-    param(
-        [string]$Prompt,
-        [bool]$DefaultYes = $false
-    )
-    $hint = if ($DefaultYes) { 'Y/n' } else { 'y/N' }
-    while ($true) {
-        $answer = (Read-DownloadInput "$Prompt [$hint]").Trim().ToLowerInvariant()
-        if ([string]::IsNullOrEmpty($answer)) { return $DefaultYes }
-        if ($answer -in @('y', 'yes')) { return $true }
-        if ($answer -in @('n', 'no')) { return $false }
-        Write-Host '  Please enter y or n.' -ForegroundColor Red
-    }
-}
-
-function Invoke-Interactive {
-    param($Base)
-
-    Write-Host ''
-    Write-Host '============================================================' -ForegroundColor DarkCyan
-    Write-Host ' DOWNLOAD BOOKS' -ForegroundColor Cyan
-    Write-Host '============================================================' -ForegroundColor DarkCyan
-    Write-Host ' Press ENTER to accept a default. Uppercase Y/N marks the default.' -ForegroundColor Gray
-
-    $source = Read-Choice -Prompt '1 / 4  Download source' -DefaultKey '1' -Choices @(
-        @{ Key = '1'; Label = 'Standard Ebooks (public domain, high quality)'; Value = 'standard' }
-        @{ Key = '2'; Label = 'AliceAndBooks'; Value = 'alice' }
-        @{ Key = '3'; Label = 'Direct authorized URL'; Value = 'url' }
-        @{ Key = '4'; Label = 'JSON manifest file'; Value = 'manifest' }
-    )
-
-    $url = $null
-    $manifest = $null
-
-    if ($source -eq 'url') {
-        while ($true) {
-            $url = (Read-DownloadInput 'Enter book URL (http/https)').Trim()
-            if (Test-HttpUrl $url) { break }
-            Write-Host '  Must be a valid HTTP or HTTPS URL.' -ForegroundColor Red
-        }
-    }
-
-    if ($source -eq 'manifest') {
-        while ($true) {
-            $raw = (Read-DownloadInput 'Path to JSON manifest file').Trim()
-            $manifest = Resolve-PortablePath $raw
-            if (Test-Path -LiteralPath $manifest) { break }
-            Write-Host "  File not found: $manifest" -ForegroundColor Red
-        }
-    }
-
-    $format = Read-Choice -Prompt '2 / 4  Book format' -DefaultKey '1' -Choices @(
-        @{ Key = '1'; Label = 'PDF (where available)'; Value = 'pdf' }
-        @{ Key = '2'; Label = 'EPUB'; Value = 'epub' }
-        @{ Key = '3'; Label = 'MOBI / Kindle (azw3 on Standard Ebooks)'; Value = 'mobi' }
-    )
-
-    Write-Host ''
-    Write-Host '3 / 4  Download limit' -ForegroundColor Cyan
-    Write-Host '  Enter 0 for unlimited books.' -ForegroundColor Gray
-    while ($true) {
-        $limitRaw = (Read-DownloadInput "Max number of books (ENTER = $($Base.Limit))").Trim()
-        $limit = $Base.Limit
-        if (-not $limitRaw) { break }
-        $n = 0
-        if (-not [int]::TryParse($limitRaw, [ref]$n) -or $n -lt 0) {
-            Write-Host '  Enter a whole number of 0 or more.' -ForegroundColor Red
-            continue
-        }
-        $limit = $n
-        break
-    }
-
-    Write-Host ''
-    Write-Host '4 / 4  Download mode' -ForegroundColor Cyan
-    Write-Host '  Dry-run checks availability without saving books.' -ForegroundColor Gray
-    $dryRun = Read-YesNo -Prompt 'Dry-run only (no downloads)?' -DefaultYes:$false
-    $kindle = $Base.Kindle
-    $kindlePath = $Base.KindlePath
-    $delay = $Base.Delay
-    $retries = $Base.Retries
-    $timeout = $Base.Timeout
-
-    Write-Host ''
-    Write-Host '------------------------------------------------------------' -ForegroundColor DarkCyan
-    Write-Host ' REVIEW DOWNLOAD SETTINGS' -ForegroundColor Cyan
-    Write-DownloadSetting 'Source' $source
-    if ($url) { Write-DownloadSetting 'URL' $url }
-    if ($manifest) { Write-DownloadSetting 'Manifest' $manifest }
-    Write-DownloadSetting 'Format' $format.ToUpperInvariant()
-    Write-DownloadSetting 'Save to' $(if ($Base.Output) { $Base.Output } else { $Script:BOOKS_DIR })
-    Write-DownloadSetting 'Limit' $(if ($limit -gt 0) { $limit } else { 'Unlimited' })
-    Write-DownloadSetting 'Mode' $(if ($dryRun) { 'Dry-run (no downloads)' } else { 'Download books' })
-    Write-DownloadSetting 'Kindle' $(if ($kindle) { if ($kindlePath) { $kindlePath } else { 'Auto-detect' } } else { 'No automatic copy' })
-    Write-DownloadSetting 'Delay' "$delay ms"
-    Write-DownloadSetting 'Attempts' "$retries"
-    Write-DownloadSetting 'Timeout' "$timeout ms"
-    Write-Host '------------------------------------------------------------' -ForegroundColor DarkCyan
-    Write-Host ''
-
-    if (-not (Read-YesNo -Prompt 'Proceed with these settings?' -DefaultYes:$true)) {
-        Write-Host '  Download cancelled.' -ForegroundColor Yellow
-        return $null
-    }
-
-    return [pscustomobject]@{
-        Source     = $source
-        Url        = $url
-        Manifest   = $manifest
-        Output     = $(if ($Base.Output) { $Base.Output } else { $Script:BOOKS_DIR })
-        Kindle     = $kindle
-        KindlePath = $kindlePath
-        Format     = (Normalize-Format $format)
-        Delay      = $delay
-        Limit      = $limit
-        Retries    = $retries
-        Timeout    = $timeout
-        DryRun     = $dryRun
-    }
-}
-
-# ============================================================
-# MAIN
-# ============================================================
-function Main {
+function Invoke-DownloadWorkflow {
     if ($Help) {
         Show-Help
         return
@@ -1366,185 +1338,10 @@ function Main {
     Write-Success "Inventory: $($Script:INVENTORY_FILE)"
     Write-Host ''
 }
+#endregion
 
-try {
-    Main
-} catch {
-    Write-Host ''
-    Write-ErrMsg ($_.Exception.Message)
-    if ($_.ScriptStackTrace) {
-        Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
-    }
-    throw
-}
-
-}
-
-function Invoke-KindleTransfer {
-# ============================================================
-# KindleTransfer.ps1
-#
-# Enhanced Kindle Paperwhite USB / MTP File Manager
-#
-# PC:
-#   D:\KindleTools\books
-#   D:\KindleTools\backup
-#
-# Kindle:
-#   This PC\Kindle...\Internal Storage
-#
-# FEATURES
-#   1.  PC -> Kindle
-#   2.  Kindle -> PC
-#   3.  Full Kindle browser
-#   4.  Browse documents
-#   5.  Search Kindle files
-#   6.  File information
-#   7.  Timestamped Kindle backup
-#   8.  Storage report
-#   9.  Delete Kindle files
-#   10. Kindle information
-#   11. Open Kindle in File Explorer
-#   12. Refresh / reconnect
-#   13. Open PC books folder
-#   14. List files in documents
-#   15. Exit
-#
-# SAFETY
-#   - No firmware operations
-#   - No .bin update installation
-#   - No jailbreak automation
-#   - No security bypass
-#   - Normal Windows Shell / MTP file operations only
-#
-# ============================================================
-
-$ErrorActionPreference = "Stop"
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-$PcRootFolder       = $PSScriptRoot
-$PcBooksFolder      = Join-Path $PcRootFolder "books"
-$PcBackupFolder     = Join-Path $PcRootFolder "backup"
-
-# Supported files for PC -> Kindle.
-$SupportedExtensions = @(
-    ".epub",
-    ".pdf",
-    ".mobi",
-    ".azw",
-    ".azw3",
-    ".kfx",
-    ".txt",
-    ".doc",
-    ".docx",
-    ".rtf",
-    ".html",
-    ".htm",
-    ".cbz",
-    ".cbr"
-)
-
-# CopyHere flags.
-#
-# 4  = No error UI
-# 16 = No confirmation UI
-#
-# 20 = 4 + 16
-$CopyFlags = 20
-
-# MTP operations are asynchronous.
-$VerificationTimeoutSeconds = 45
-$VerificationIntervalMs     = 750
-
-# Backup operations can involve many files.
-$BackupCopyWaitSeconds = 2
-
-# ============================================================
-# WINDOWS SHELL
-# ============================================================
-
-$Shell = New-Object -ComObject Shell.Application
-
-# ============================================================
-# CREATE LOCAL DIRECTORIES
-# ============================================================
-
-function Initialize-LocalFolders {
-
-    foreach ($Folder in @(
-        $PcRootFolder,
-        $PcBooksFolder,
-        $PcBackupFolder
-    )) {
-
-        if (-not (Test-Path -LiteralPath $Folder)) {
-
-            New-Item `
-                -ItemType Directory `
-                -Path $Folder `
-                -Force |
-                Out-Null
-        }
-    }
-}
-
-# ============================================================
-# PAUSE
-# ============================================================
-
-function Pause-Screen {
-
-    Write-Host ""
-    Read-Host "Press ENTER to continue" | Out-Null
-}
-
-# ============================================================
-# FORMAT SIZE
-# ============================================================
-
-function Format-Size {
-
-    param(
-        [AllowNull()]
-        [double]$Bytes
-    )
-
-    if ($null -eq $Bytes) {
-        return "Unknown"
-    }
-
-    if ($Bytes -lt 0) {
-        return "Unknown"
-    }
-
-    if ($Bytes -ge 1TB) {
-        return "{0:N2} TB" -f ($Bytes / 1TB)
-    }
-
-    if ($Bytes -ge 1GB) {
-        return "{0:N2} GB" -f ($Bytes / 1GB)
-    }
-
-    if ($Bytes -ge 1MB) {
-        return "{0:N2} MB" -f ($Bytes / 1MB)
-    }
-
-    if ($Bytes -ge 1KB) {
-        return "{0:N2} KB" -f ($Bytes / 1KB)
-    }
-
-    return "{0:N0} bytes" -f $Bytes
-}
-
-# ============================================================
-# GET THIS PC
-# ============================================================
-
+#region Kindle connection and folder lookup
 function Get-ThisPC {
-
     try {
         return $Shell.Namespace(17)
     }
@@ -1553,12 +1350,7 @@ function Get-ThisPC {
     }
 }
 
-# ============================================================
-# FIND KINDLE
-# ============================================================
-
 function Get-Kindle {
-
     $ThisPC = Get-ThisPC
 
     if ($null -eq $ThisPC) {
@@ -1566,11 +1358,8 @@ function Get-Kindle {
     }
 
     try {
-
         foreach ($Item in $ThisPC.Items()) {
-
             try {
-
                 $Name = [string]$Item.Name
 
                 if (
@@ -1592,12 +1381,7 @@ function Get-Kindle {
     return $null
 }
 
-# ============================================================
-# GET KINDLE NAME
-# ============================================================
-
 function Get-KindleName {
-
     $Kindle = Get-Kindle
 
     if ($null -eq $Kindle) {
@@ -1607,113 +1391,49 @@ function Get-KindleName {
     return [string]$Kindle.Name
 }
 
-# ============================================================
-# GET KINDLE LOGICAL ROOT PATH
-# ============================================================
-
 function Get-KindleRootPath {
-
     $KindleName = Get-KindleName
 
     return "This PC\$KindleName"
 }
 
-# ============================================================
-# GET KINDLE LOGICAL INTERNAL STORAGE PATH
-# ============================================================
-
 function Get-KindleStoragePath {
-
     $KindleName = Get-KindleName
 
     return "This PC\$KindleName\Internal Storage"
 }
 
-# ============================================================
-# GET KINDLE LOGICAL DOCUMENTS PATH
-# ============================================================
-
 function Get-KindlePath {
-
     $KindleName = Get-KindleName
 
     return "This PC\$KindleName\Internal Storage\documents"
 }
 
-# ============================================================
-# GET INTERNAL STORAGE
-# ============================================================
+# Windows Shell folders are COM objects; missing/disconnected folders return null.
+function Get-MtpChildFolder {
+    param($Folder, [string]$Name)
+    if ($null -eq $Folder) { return $null }
+    try {
+        foreach ($item in $Folder.Items()) {
+            if ($item.IsFolder -and [string]$item.Name -ieq $Name) {
+                return $item.GetFolder()
+            }
+        }
+    } catch { return $null }
+    return $null
+}
 
 function Get-KindleInternalStorage {
-
-    $Kindle = Get-Kindle
-
-    if ($null -eq $Kindle) {
-        return $null
-    }
-
-    try {
-
-        $KindleFolder = $Kindle.GetFolder()
-
-        if ($null -eq $KindleFolder) {
-            return $null
-        }
-
-        foreach ($Item in $KindleFolder.Items()) {
-
-            if (
-                [string]$Item.Name -eq "Internal Storage" -and
-                $Item.IsFolder
-            ) {
-                return $Item.GetFolder()
-            }
-        }
-    }
-    catch {
-        return $null
-    }
-
-    return $null
+    $kindle = Get-Kindle
+    if ($null -eq $kindle) { return $null }
+    try { return Get-MtpChildFolder -Folder $kindle.GetFolder() -Name 'Internal Storage' }
+    catch { return $null }
 }
-
-# ============================================================
-# GET DOCUMENTS
-# ============================================================
 
 function Get-KindleDocuments {
-
-    $Storage = Get-KindleInternalStorage
-
-    if ($null -eq $Storage) {
-        return $null
-    }
-
-    try {
-
-        foreach ($Item in $Storage.Items()) {
-
-            if (
-                [string]$Item.Name -eq "documents" -and
-                $Item.IsFolder
-            ) {
-                return $Item.GetFolder()
-            }
-        }
-    }
-    catch {
-        return $null
-    }
-
-    return $null
+    return Get-MtpChildFolder -Folder (Get-KindleInternalStorage) -Name 'documents'
 }
-
-# ============================================================
-# WAIT FOR KINDLE
-# ============================================================
-
 function Wait-ForKindle {
-
     param(
         [int]$TimeoutSeconds = 0
     )
@@ -1724,17 +1444,13 @@ function Wait-ForKindle {
     $StartTime = Get-Date
 
     while ($true) {
-
         try {
-
             $Kindle = Get-Kindle
 
             if ($null -ne $Kindle) {
-
                 $Storage = Get-KindleInternalStorage
 
                 if ($null -ne $Storage) {
-
                     Write-Host ""
                     Write-Host "Kindle detected!" -ForegroundColor Green
                     Write-Host ""
@@ -1752,11 +1468,9 @@ function Wait-ForKindle {
         }
 
         if ($TimeoutSeconds -gt 0) {
-
             $Elapsed = ((Get-Date) - $StartTime).TotalSeconds
 
             if ($Elapsed -ge $TimeoutSeconds) {
-
                 Write-Host ""
                 Write-Host "Kindle was not detected." -ForegroundColor Red
 
@@ -1770,14 +1484,8 @@ function Wait-ForKindle {
     }
 }
 
-# ============================================================
-# TEST KINDLE CONNECTION
-# ============================================================
-
 function Test-KindleConnection {
-
     try {
-
         $Kindle = Get-Kindle
 
         if ($null -eq $Kindle) {
@@ -1792,20 +1500,16 @@ function Test-KindleConnection {
         return $false
     }
 }
+#endregion
 
-# ============================================================
-# GET MTP ITEMS
-# ============================================================
-
+#region Kindle item metadata
 function Get-MtpItems {
-
     param(
         [Parameter(Mandatory)]
         $Folder
     )
 
     try {
-
         if ($null -eq $Folder) {
             return @()
         }
@@ -1817,46 +1521,7 @@ function Get-MtpItems {
     }
 }
 
-# ============================================================
-# FIND CHILD FOLDER
-# ============================================================
-
-function Find-MtpFolder {
-
-    param(
-        [Parameter(Mandatory)]
-        $Folder,
-
-        [Parameter(Mandatory)]
-        [string]$Name
-    )
-
-    try {
-
-        foreach ($Item in $Folder.Items()) {
-
-            if (
-                $Item.IsFolder -and
-                [string]$Item.Name -ieq $Name
-            ) {
-
-                return $Item.GetFolder()
-            }
-        }
-    }
-    catch {
-        return $null
-    }
-
-    return $null
-}
-
-# ============================================================
-# GET ITEM TYPE
-# ============================================================
-
 function Get-MtpItemType {
-
     param(
         $Folder,
         $Item
@@ -1871,7 +1536,6 @@ function Get-MtpItemType {
     }
 
     try {
-
         $Type = $Folder.GetDetailsOf($Item, 2)
 
         if (-not [string]::IsNullOrWhiteSpace($Type)) {
@@ -1882,7 +1546,6 @@ function Get-MtpItemType {
     }
 
     try {
-
         $Extension = [System.IO.Path]::GetExtension(
             [string]$Item.Name
         )
@@ -1897,12 +1560,7 @@ function Get-MtpItemType {
     return "File"
 }
 
-# ============================================================
-# GET FILE SIZE FROM MTP
-# ============================================================
-
 function Get-MtpFileSize {
-
     param(
         $Documents,
         $Item
@@ -1917,7 +1575,6 @@ function Get-MtpFileSize {
     }
 
     try {
-
         # Windows Shell details column.
         # On most Windows systems column 1 is Size.
 
@@ -1932,32 +1589,26 @@ function Get-MtpFileSize {
         $Text = $Text.Replace(",", "")
 
         if ($Text -match "([0-9\.]+)\s*TB") {
-
             return ([double]$matches[1] * 1TB)
         }
 
         if ($Text -match "([0-9\.]+)\s*GB") {
-
             return ([double]$matches[1] * 1GB)
         }
 
         if ($Text -match "([0-9\.]+)\s*MB") {
-
             return ([double]$matches[1] * 1MB)
         }
 
         if ($Text -match "([0-9\.]+)\s*KB") {
-
             return ([double]$matches[1] * 1KB)
         }
 
         if ($Text -match "([0-9\.]+)\s*BYTES") {
-
             return [double]$matches[1]
         }
 
         if ($Text -match "([0-9\.]+)") {
-
             return [double]$matches[1]
         }
     }
@@ -1967,12 +1618,7 @@ function Get-MtpFileSize {
     return 0
 }
 
-# ============================================================
-# GET FILE LIST IN CURRENT FOLDER
-# ============================================================
-
 function Get-MtpFileList {
-
     param(
         [Parameter(Mandatory)]
         $Folder
@@ -1981,9 +1627,7 @@ function Get-MtpFileList {
     $Results = @()
 
     foreach ($Item in Get-MtpItems $Folder) {
-
         if (-not $Item.IsFolder) {
-
             $Size = Get-MtpFileSize `
                 -Documents $Folder `
                 -Item $Item
@@ -2002,12 +1646,7 @@ function Get-MtpFileList {
     return $Results
 }
 
-# ============================================================
-# GET ALL ITEMS
-# ============================================================
-
 function Get-MtpInventoryRecursive {
-
     param(
         [Parameter(Mandatory)]
         $Folder,
@@ -2021,15 +1660,11 @@ function Get-MtpInventoryRecursive {
     )
 
     try {
-
         foreach ($Item in Get-MtpItems $Folder) {
-
             try {
-
                 $Name = [string]$Item.Name
 
                 if ($Item.IsFolder) {
-
                     $ItemPath = "$LogicalPath\$Name"
 
                     $Results.Add(
@@ -2047,7 +1682,6 @@ function Get-MtpInventoryRecursive {
                     $ChildFolder = $Item.GetFolder()
 
                     if ($null -ne $ChildFolder) {
-
                         Get-MtpInventoryRecursive `
                             -Folder $ChildFolder `
                             -LogicalPath $ItemPath `
@@ -2055,7 +1689,6 @@ function Get-MtpInventoryRecursive {
                     }
                 }
                 else {
-
                     $Size = Get-MtpFileSize `
                         -Documents $Folder `
                         -Item $Item
@@ -2083,13 +1716,10 @@ function Get-MtpInventoryRecursive {
     catch {
     }
 }
+#endregion
 
-# ============================================================
-# PC -> KINDLE
-# ============================================================
-
+#region Kindle transfers
 function Copy-PCToKindle {
-
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host " PC -> KINDLE" -ForegroundColor Cyan
@@ -2100,7 +1730,6 @@ function Copy-PCToKindle {
     Write-Host "  $PcBooksFolder" -ForegroundColor Cyan
 
     if (-not (Test-Path -LiteralPath $PcBooksFolder)) {
-
         New-Item `
             -ItemType Directory `
             -Path $PcBooksFolder `
@@ -2126,7 +1755,6 @@ function Copy-PCToKindle {
     )
 
     if ($Files.Count -eq 0) {
-
         Write-Host ""
         Write-Host "No supported books found." -ForegroundColor Yellow
 
@@ -2143,7 +1771,6 @@ function Copy-PCToKindle {
     $Documents = Get-KindleDocuments
 
     if ($null -eq $Documents) {
-
         Write-Host ""
         Write-Host "Could not find documents folder." -ForegroundColor Red
 
@@ -2164,11 +1791,9 @@ function Copy-PCToKindle {
     $Mode = Read-Host "Choose"
 
     if ($Mode -eq "2") {
-
         $SelectedFiles = Select-PCFiles -Files $Files
 
         if ($SelectedFiles.Count -eq 0) {
-
             Write-Host ""
             Write-Host "No files selected." -ForegroundColor Yellow
 
@@ -2187,34 +1812,29 @@ function Copy-PCToKindle {
     $Failed = 0
 
     foreach ($File in $Files) {
-
         $Count++
 
         Write-Host "[$Count/$($Files.Count)] $($File.Name)" `
             -ForegroundColor Cyan
 
         try {
-
             $Existing = Find-MtpItem `
                 -Folder $Documents `
                 -Name $File.Name
 
             if ($null -ne $Existing) {
-
                 Write-Host "    Already exists on Kindle." `
                     -ForegroundColor Yellow
 
                 $Overwrite = Read-Host "    Replace it? (Y/N)"
 
                 if ($Overwrite -notmatch "^[Yy]$") {
-
                     Write-Host "    Skipped." -ForegroundColor DarkGray
 
                     continue
                 }
 
                 if ($Existing.IsFolder) {
-
                     Write-Host "    Destination is a folder. Skipped." `
                         -ForegroundColor Red
 
@@ -2251,14 +1871,12 @@ function Copy-PCToKindle {
                 -TimeoutSeconds $VerificationTimeoutSeconds
 
             if ($Verified) {
-
                 Write-Host "    Verified on Kindle." `
                     -ForegroundColor Green
 
                 $Success++
             }
             else {
-
                 Write-Host "    Could not verify destination." `
                     -ForegroundColor Red
 
@@ -2266,7 +1884,6 @@ function Copy-PCToKindle {
             }
         }
         catch {
-
             Write-Host "    FAILED" -ForegroundColor Red
             Write-Host "    $($_.Exception.Message)" `
                 -ForegroundColor Red
@@ -2285,12 +1902,7 @@ function Copy-PCToKindle {
     Write-Host "Failed     : $Failed" -ForegroundColor Red
 }
 
-# ============================================================
-# SELECT PC FILES
-# ============================================================
-
 function Select-PCFiles {
-
     param(
         [Parameter(Mandatory)]
         [array]$Files
@@ -2301,7 +1913,6 @@ function Select-PCFiles {
     Write-Host ""
 
     for ($i = 0; $i -lt $Files.Count; $i++) {
-
         $Number = $i + 1
 
         Write-Host (
@@ -2322,18 +1933,15 @@ function Select-PCFiles {
     $Selected = @()
 
     foreach ($Part in $InputValue.Split(",")) {
-
         $Part = $Part.Trim()
 
         if ($Part -match "^\d+$") {
-
             $Index = [int]$Part - 1
 
             if (
                 $Index -ge 0 -and
                 $Index -lt $Files.Count
             ) {
-
                 $Selected += $Files[$Index]
             }
         }
@@ -2342,12 +1950,7 @@ function Select-PCFiles {
     return $Selected
 }
 
-# ============================================================
-# FIND MTP ITEM
-# ============================================================
-
 function Find-MtpItem {
-
     param(
         [Parameter(Mandatory)]
         $Folder,
@@ -2357,9 +1960,7 @@ function Find-MtpItem {
     )
 
     try {
-
         foreach ($Item in $Folder.Items()) {
-
             if ([string]$Item.Name -ieq $Name) {
                 return $Item
             }
@@ -2371,12 +1972,7 @@ function Find-MtpItem {
     return $null
 }
 
-# ============================================================
-# WAIT FOR MTP ITEM
-# ============================================================
-
 function Wait-ForMtpItem {
-
     param(
         [Parameter(Mandatory)]
         $Folder,
@@ -2390,9 +1986,7 @@ function Wait-ForMtpItem {
     $Start = Get-Date
 
     while ($true) {
-
         try {
-
             $Item = Find-MtpItem `
                 -Folder $Folder `
                 -Name $Name
@@ -2416,12 +2010,7 @@ function Wait-ForMtpItem {
     }
 }
 
-# ============================================================
-# KINDLE -> PC
-# ============================================================
-
 function Copy-KindleToPC {
-
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host " KINDLE -> PC" -ForegroundColor Cyan
@@ -2434,7 +2023,6 @@ function Copy-KindleToPC {
     $Documents = Get-KindleDocuments
 
     if ($null -eq $Documents) {
-
         Write-Host ""
         Write-Host "Could not find documents folder." `
             -ForegroundColor Red
@@ -2445,7 +2033,6 @@ function Copy-KindleToPC {
     $Files = @(Get-MtpFileList -Folder $Documents)
 
     if ($Files.Count -eq 0) {
-
         Write-Host ""
         Write-Host "No files found on Kindle." -ForegroundColor Yellow
 
@@ -2453,7 +2040,6 @@ function Copy-KindleToPC {
     }
 
     if (-not (Test-Path -LiteralPath $PcBooksFolder)) {
-
         New-Item `
             -ItemType Directory `
             -Path $PcBooksFolder `
@@ -2474,11 +2060,9 @@ function Copy-KindleToPC {
     $Mode = Read-Host "Choose"
 
     if ($Mode -eq "2") {
-
         $Files = Select-MtpFiles -Files $Files
 
         if ($Files.Count -eq 0) {
-
             Write-Host ""
             Write-Host "No files selected." -ForegroundColor Yellow
 
@@ -2499,27 +2083,23 @@ function Copy-KindleToPC {
     $Failed = 0
 
     foreach ($File in $Files) {
-
         $Count++
 
         Write-Host "[$Count/$($Files.Count)] $($File.Name)" `
             -ForegroundColor Cyan
 
         try {
-
             $DestinationPath = Join-Path `
                 $PcBooksFolder `
                 $File.Name
 
             if (Test-Path -LiteralPath $DestinationPath) {
-
                 Write-Host "    File already exists on PC." `
                     -ForegroundColor Yellow
 
                 $Overwrite = Read-Host "    Replace it? (Y/N)"
 
                 if ($Overwrite -notmatch "^[Yy]$") {
-
                     Write-Host "    Skipped." -ForegroundColor DarkGray
 
                     continue
@@ -2549,14 +2129,12 @@ function Copy-KindleToPC {
                 -TimeoutSeconds $VerificationTimeoutSeconds
 
             if ($Verified) {
-
                 Write-Host "    Verified on PC." `
                     -ForegroundColor Green
 
                 $Success++
             }
             else {
-
                 Write-Host "    Could not verify destination." `
                     -ForegroundColor Red
 
@@ -2564,7 +2142,6 @@ function Copy-KindleToPC {
             }
         }
         catch {
-
             Write-Host "    FAILED" -ForegroundColor Red
             Write-Host "    $($_.Exception.Message)" `
                 -ForegroundColor Red
@@ -2583,12 +2160,7 @@ function Copy-KindleToPC {
     Write-Host "Failed     : $Failed" -ForegroundColor Red
 }
 
-# ============================================================
-# SELECT MTP FILES
-# ============================================================
-
 function Select-MtpFiles {
-
     param(
         [Parameter(Mandatory)]
         [array]$Files
@@ -2599,7 +2171,6 @@ function Select-MtpFiles {
     Write-Host ""
 
     for ($i = 0; $i -lt $Files.Count; $i++) {
-
         Write-Host (
             "[{0}] {1} ({2})" -f `
                 ($i + 1),
@@ -2617,18 +2188,15 @@ function Select-MtpFiles {
     $Selected = @()
 
     foreach ($Part in $InputValue.Split(",")) {
-
         $Part = $Part.Trim()
 
         if ($Part -match "^\d+$") {
-
             $Index = [int]$Part - 1
 
             if (
                 $Index -ge 0 -and
                 $Index -lt $Files.Count
             ) {
-
                 $Selected += $Files[$Index]
             }
         }
@@ -2637,12 +2205,7 @@ function Select-MtpFiles {
     return $Selected
 }
 
-# ============================================================
-# WAIT FOR PC FILE
-# ============================================================
-
 function Wait-ForPCFile {
-
     param(
         [Parameter(Mandatory)]
         [string]$Path,
@@ -2653,11 +2216,8 @@ function Wait-ForPCFile {
     $Start = Get-Date
 
     while ($true) {
-
         if (Test-Path -LiteralPath $Path) {
-
             try {
-
                 $Item = Get-Item -LiteralPath $Path
 
                 if ($Item.Length -ge 0) {
@@ -2679,115 +2239,10 @@ function Wait-ForPCFile {
         Start-Sleep -Milliseconds $VerificationIntervalMs
     }
 }
+#endregion
 
-# ============================================================
-# LIST DOCUMENTS
-# ============================================================
-
-function List-KindleFiles {
-
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host " FILES ON KINDLE" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
-
-    if (-not (Wait-ForKindle -TimeoutSeconds 30)) {
-        return
-    }
-
-    $Documents = Get-KindleDocuments
-
-    if ($null -eq $Documents) {
-
-        Write-Host ""
-        Write-Host "Documents folder not found." -ForegroundColor Red
-
-        return
-    }
-
-    $Files = @(Get-MtpFileList -Folder $Documents)
-
-    Write-Host ""
-    Write-Host "Device:" -ForegroundColor Gray
-    Write-Host "  $(Get-KindleName)" -ForegroundColor Cyan
-
-    Write-Host ""
-    Write-Host "Path:" -ForegroundColor Gray
-    Write-Host "  $(Get-KindlePath)" -ForegroundColor Cyan
-
-    Write-Host ""
-
-    if ($Files.Count -eq 0) {
-
-        Write-Host "No files found." -ForegroundColor Yellow
-
-        return
-    }
-
-    Write-Host (
-        "{0,4}  {1,-60}  {2,12}" -f `
-        "#",
-        "FILE",
-        "SIZE"
-    ) -ForegroundColor Gray
-
-    Write-Host (
-        "{0,4}  {1,-60}  {2,12}" -f `
-        "---",
-        "------------------------------------------------------------",
-        "------------"
-    ) -ForegroundColor DarkGray
-
-    $Count = 0
-    [double]$TotalSize = 0
-
-    foreach ($File in $Files) {
-
-        $Count++
-
-        $SizeText = "Unknown"
-
-        if ($File.Size -gt 0) {
-
-            $SizeText = Format-Size $File.Size
-
-            $TotalSize += $File.Size
-        }
-
-        $Name = $File.Name
-
-        if ($Name.Length -gt 60) {
-            $Name = $Name.Substring(0, 57) + "..."
-        }
-
-        Write-Host (
-            "{0,4}  {1,-60}  {2,12}" -f `
-            $Count,
-            $Name,
-            $SizeText
-        )
-    }
-
-    Write-Host ""
-    Write-Host "----------------------------------------"
-
-    Write-Host ""
-    Write-Host "Total files: $Count" -ForegroundColor Green
-
-    if ($TotalSize -gt 0) {
-
-        Write-Host `
-            "Known file size: $(Format-Size $TotalSize)" `
-            -ForegroundColor Yellow
-    }
-}
-
-# ============================================================
-# FULL KINDLE BROWSER
-# ============================================================
-
+#region Kindle browser and search
 function Browse-Kindle {
-
     if (-not (Wait-ForKindle -TimeoutSeconds 30)) {
         return
     }
@@ -2795,7 +2250,6 @@ function Browse-Kindle {
     $Storage = Get-KindleInternalStorage
 
     if ($null -eq $Storage) {
-
         Write-Host ""
         Write-Host "Internal Storage unavailable." -ForegroundColor Red
 
@@ -2807,37 +2261,7 @@ function Browse-Kindle {
         -LogicalPath $(Get-KindleStoragePath)
 }
 
-# ============================================================
-# BROWSE DOCUMENTS
-# ============================================================
-
-function Browse-KindleDocuments {
-
-    if (-not (Wait-ForKindle -TimeoutSeconds 30)) {
-        return
-    }
-
-    $Documents = Get-KindleDocuments
-
-    if ($null -eq $Documents) {
-
-        Write-Host ""
-        Write-Host "Documents folder unavailable." -ForegroundColor Red
-
-        return
-    }
-
-    Invoke-KindleBrowser `
-        -Folder $Documents `
-        -LogicalPath $(Get-KindlePath)
-}
-
-# ============================================================
-# KINDLE BROWSER
-# ============================================================
-
 function Invoke-KindleBrowser {
-
     param(
         [Parameter(Mandatory)]
         $Folder,
@@ -2847,7 +2271,6 @@ function Invoke-KindleBrowser {
     )
 
     while ($true) {
-
         Clear-Host
 
         Write-Host "============================================================" `
@@ -2866,14 +2289,13 @@ function Invoke-KindleBrowser {
         Write-Host ""
 
         $Items = @(Get-MtpItems $Folder)
+        $DisplayItems = @()
 
         if ($Items.Count -eq 0) {
-
             Write-Host "This folder is empty or unavailable." `
                 -ForegroundColor Yellow
         }
         else {
-
             $Folders = @(
                 $Items |
                 Where-Object { $_.IsFolder } |
@@ -2897,11 +2319,9 @@ function Invoke-KindleBrowser {
             }
 
             for ($i = 0; $i -lt $DisplayItems.Count; $i++) {
-
                 $Item = $DisplayItems[$i]
 
                 if ($Item.IsFolder) {
-
                     Write-Host (
                         "[{0,3}] [DIR]  {1}" -f `
                         ($i + 1),
@@ -2909,7 +2329,6 @@ function Invoke-KindleBrowser {
                     ) -ForegroundColor Yellow
                 }
                 else {
-
                     $Size = Get-MtpFileSize `
                         -Documents $Folder `
                         -Item $Item
@@ -2954,12 +2373,10 @@ function Invoke-KindleBrowser {
         }
 
         if ($Choice -match "^[Bb]$") {
-
             $Parent = Get-MtpParentFolder `
                 -Folder $Folder
 
             if ($null -eq $Parent) {
-
                 Write-Host ""
                 Write-Host "Already at the top of this browser." `
                     -ForegroundColor Yellow
@@ -2967,7 +2384,6 @@ function Invoke-KindleBrowser {
                 Start-Sleep -Seconds 1
             }
             else {
-
                 $ParentPath = Get-ParentLogicalPath `
                     -LogicalPath $LogicalPath
 
@@ -2982,12 +2398,10 @@ function Invoke-KindleBrowser {
         }
 
         if ($Choice -match "^[Ii]$") {
-
             $Selected = Select-MtpItem `
                 -Folder $Folder
 
             if ($null -ne $Selected) {
-
                 Show-MtpItemInformation `
                     -Folder $Folder `
                     -Item $Selected `
@@ -2998,12 +2412,10 @@ function Invoke-KindleBrowser {
         }
 
         if ($Choice -match "^[Cc]$") {
-
             $Selected = Select-MtpItem `
                 -Folder $Folder
 
             if ($null -ne $Selected) {
-
                 Copy-MtpItemToPC `
                     -Folder $Folder `
                     -Item $Selected `
@@ -3014,12 +2426,10 @@ function Invoke-KindleBrowser {
         }
 
         if ($Choice -match "^[Dd]$") {
-
             $Selected = Select-MtpItem `
                 -Folder $Folder
 
             if ($null -ne $Selected) {
-
                 Remove-MtpFile `
                     -Folder $Folder `
                     -Item $Selected `
@@ -3030,14 +2440,12 @@ function Invoke-KindleBrowser {
         }
 
         if ($Choice -match "^\d+$") {
-
             $Number = [int]$Choice
 
             if (
                 $Number -lt 1 -or
                 $Number -gt $DisplayItems.Count
             ) {
-
                 Write-Host ""
                 Write-Host "Invalid selection." `
                     -ForegroundColor Red
@@ -3050,20 +2458,16 @@ function Invoke-KindleBrowser {
             $Selected = $DisplayItems[$Number - 1]
 
             if ($Selected.IsFolder) {
-
                 try {
-
                     $ChildFolder = $Selected.GetFolder()
 
                     if ($null -ne $ChildFolder) {
-
                         Invoke-KindleBrowser `
                             -Folder $ChildFolder `
                             -LogicalPath "$LogicalPath\$($Selected.Name)"
                     }
                 }
                 catch {
-
                     Write-Host ""
                     Write-Host "Unable to open folder." `
                         -ForegroundColor Red
@@ -3089,19 +2493,13 @@ function Invoke-KindleBrowser {
     }
 }
 
-# ============================================================
-# GET MTP PARENT
-# ============================================================
-
 function Get-MtpParentFolder {
-
     param(
         [Parameter(Mandatory)]
         $Folder
     )
 
     try {
-
         $Parent = $Folder.ParentFolder
 
         if ($null -ne $Parent) {
@@ -3114,12 +2512,7 @@ function Get-MtpParentFolder {
     return $null
 }
 
-# ============================================================
-# GET PARENT LOGICAL PATH
-# ============================================================
-
 function Get-ParentLogicalPath {
-
     param(
         [Parameter(Mandatory)]
         [string]$LogicalPath
@@ -3134,12 +2527,7 @@ function Get-ParentLogicalPath {
     return $LogicalPath.Substring(0, $Index)
 }
 
-# ============================================================
-# SELECT MTP ITEM
-# ============================================================
-
 function Select-MtpItem {
-
     param(
         [Parameter(Mandatory)]
         $Folder
@@ -3148,7 +2536,6 @@ function Select-MtpItem {
     $Items = @(Get-MtpItems $Folder)
 
     if ($Items.Count -eq 0) {
-
         Write-Host ""
         Write-Host "No items available." -ForegroundColor Yellow
 
@@ -3162,11 +2549,9 @@ function Select-MtpItem {
     Write-Host ""
 
     for ($i = 0; $i -lt $Items.Count; $i++) {
-
         $Item = $Items[$i]
 
         if ($Item.IsFolder) {
-
             Write-Host (
                 "[{0}] [DIR] {1}" -f `
                 ($i + 1),
@@ -3174,7 +2559,6 @@ function Select-MtpItem {
             )
         }
         else {
-
             $Size = Get-MtpFileSize `
                 -Documents $Folder `
                 -Item $Item
@@ -3197,7 +2581,6 @@ function Select-MtpItem {
     }
 
     if ($Choice -notmatch "^\d+$") {
-
         Write-Host "Invalid selection." -ForegroundColor Red
 
         Pause-Screen
@@ -3211,7 +2594,6 @@ function Select-MtpItem {
         $Number -lt 1 -or
         $Number -gt $Items.Count
     ) {
-
         Write-Host "Invalid selection." -ForegroundColor Red
 
         Pause-Screen
@@ -3222,12 +2604,7 @@ function Select-MtpItem {
     return $Items[$Number - 1]
 }
 
-# ============================================================
-# FILE INFORMATION
-# ============================================================
-
 function Show-MtpItemInformation {
-
     param(
         [Parameter(Mandatory)]
         $Folder,
@@ -3263,12 +2640,10 @@ function Show-MtpItemInformation {
     Write-Host ""
 
     if ($Item.IsFolder) {
-
         Write-Host "Kind:" -ForegroundColor Gray
         Write-Host "  Folder" -ForegroundColor Yellow
     }
     else {
-
         $Size = Get-MtpFileSize `
             -Documents $Folder `
             -Item $Item
@@ -3287,9 +2662,7 @@ function Show-MtpItemInformation {
     Write-Host ""
 
     try {
-
         if (-not [string]::IsNullOrWhiteSpace($Item.Path)) {
-
             Write-Host "Windows MTP path:" -ForegroundColor Gray
             Write-Host "  $($Item.Path)" `
                 -ForegroundColor DarkCyan
@@ -3303,12 +2676,7 @@ function Show-MtpItemInformation {
     Pause-Screen
 }
 
-# ============================================================
-# COPY MTP ITEM TO PC
-# ============================================================
-
 function Copy-MtpItemToPC {
-
     param(
         [Parameter(Mandatory)]
         $Folder,
@@ -3345,7 +2713,6 @@ function Copy-MtpItemToPC {
     $Confirm = Read-Host "Copy this item to PC? (Y/N)"
 
     if ($Confirm -notmatch "^[Yy]$") {
-
         Write-Host ""
         Write-Host "Cancelled." -ForegroundColor Yellow
 
@@ -3355,7 +2722,6 @@ function Copy-MtpItemToPC {
     }
 
     if (-not (Test-Path -LiteralPath $PcBooksFolder)) {
-
         New-Item `
             -ItemType Directory `
             -Path $PcBooksFolder `
@@ -3368,7 +2734,6 @@ function Copy-MtpItemToPC {
         $Name
 
     if (Test-Path -LiteralPath $Destination) {
-
         Write-Host ""
         Write-Host "A file/folder with this name already exists:" `
             -ForegroundColor Yellow
@@ -3380,7 +2745,6 @@ function Copy-MtpItemToPC {
         $Overwrite = Read-Host "Replace it? (Y/N)"
 
         if ($Overwrite -notmatch "^[Yy]$") {
-
             Write-Host "Cancelled." -ForegroundColor Yellow
 
             Pause-Screen
@@ -3389,14 +2753,12 @@ function Copy-MtpItemToPC {
         }
 
         try {
-
             Remove-Item `
                 -LiteralPath $Destination `
                 -Recurse `
                 -Force
         }
         catch {
-
             Write-Host ""
             Write-Host "Could not remove existing destination." `
                 -ForegroundColor Red
@@ -3410,7 +2772,6 @@ function Copy-MtpItemToPC {
     }
 
     try {
-
         $PcFolder = $Shell.Namespace($PcBooksFolder)
 
         if ($null -eq $PcFolder) {
@@ -3433,19 +2794,16 @@ function Copy-MtpItemToPC {
         Write-Host ""
 
         if ($Verified) {
-
             Write-Host "Copy verified successfully." `
                 -ForegroundColor Green
         }
         else {
-
             Write-Host `
                 "Copy could not be verified within the timeout." `
                 -ForegroundColor Yellow
         }
     }
     catch {
-
         Write-Host ""
         Write-Host "Copy failed." -ForegroundColor Red
         Write-Host $_.Exception.Message -ForegroundColor Red
@@ -3454,12 +2812,7 @@ function Copy-MtpItemToPC {
     Pause-Screen
 }
 
-# ============================================================
-# DELETE MTP FILE
-# ============================================================
-
 function Remove-MtpFile {
-
     param(
         [Parameter(Mandatory)]
         $Folder,
@@ -3472,7 +2825,6 @@ function Remove-MtpFile {
     )
 
     if ($Item.IsFolder) {
-
         Write-Host ""
         Write-Host "Folder deletion is disabled." -ForegroundColor Yellow
         Write-Host ""
@@ -3522,7 +2874,6 @@ function Remove-MtpFile {
     $Confirm = Read-Host "Confirmation"
 
     if ($Confirm -cne "DELETE") {
-
         Write-Host ""
         Write-Host "Deletion cancelled." -ForegroundColor Green
 
@@ -3532,7 +2883,6 @@ function Remove-MtpFile {
     }
 
     try {
-
         $Item.InvokeVerb("delete")
 
         Write-Host ""
@@ -3549,13 +2899,11 @@ function Remove-MtpFile {
             ((Get-Date) - $Start).TotalSeconds `
             -lt $VerificationTimeoutSeconds
         ) {
-
             $StillThere = Find-MtpItem `
                 -Folder $Folder `
                 -Name $Name
 
             if ($null -eq $StillThere) {
-
                 $Removed = $true
 
                 break
@@ -3567,19 +2915,16 @@ function Remove-MtpFile {
         Write-Host ""
 
         if ($Removed) {
-
             Write-Host "Deletion verified." `
                 -ForegroundColor Green
         }
         else {
-
             Write-Host `
                 "Delete command was sent, but removal could not be verified." `
                 -ForegroundColor Yellow
         }
     }
     catch {
-
         Write-Host ""
         Write-Host "FAILED to delete the file." -ForegroundColor Red
         Write-Host $_.Exception.Message -ForegroundColor Red
@@ -3588,12 +2933,7 @@ function Remove-MtpFile {
     Pause-Screen
 }
 
-# ============================================================
-# SEARCH KINDLE
-# ============================================================
-
 function Search-Kindle {
-
     if (-not (Wait-ForKindle -TimeoutSeconds 30)) {
         return
     }
@@ -3601,7 +2941,6 @@ function Search-Kindle {
     $Storage = Get-KindleInternalStorage
 
     if ($null -eq $Storage) {
-
         Write-Host ""
         Write-Host "Internal Storage unavailable." -ForegroundColor Red
 
@@ -3666,7 +3005,6 @@ function Search-Kindle {
     Write-Host ""
 
     if ($Results.Count -eq 0) {
-
         Write-Host "No matching files found." `
             -ForegroundColor Yellow
 
@@ -3676,7 +3014,6 @@ function Search-Kindle {
     }
 
     for ($i = 0; $i -lt $Results.Count; $i++) {
-
         $Result = $Results[$i]
 
         Write-Host (
@@ -3703,12 +3040,7 @@ function Search-Kindle {
     Pause-Screen
 }
 
-# ============================================================
-# SEARCH RECURSIVELY
-# ============================================================
-
 function Search-MtpFolderForFiles {
-
     param(
         [Parameter(Mandatory)]
         $Folder,
@@ -3725,19 +3057,14 @@ function Search-MtpFolderForFiles {
     )
 
     try {
-
         foreach ($Item in Get-MtpItems $Folder) {
-
             try {
-
                 $Name = [string]$Item.Name
 
                 if ($Item.IsFolder) {
-
                     $ChildFolder = $Item.GetFolder()
 
                     if ($null -ne $ChildFolder) {
-
                         Search-MtpFolderForFiles `
                             -Folder $ChildFolder `
                             -LogicalPath "$LogicalPath\$Name" `
@@ -3746,9 +3073,7 @@ function Search-MtpFolderForFiles {
                     }
                 }
                 else {
-
                     if ($Name -like "*$Query*") {
-
                         $Size = Get-MtpFileSize `
                             -Documents $Folder `
                             -Item $Item
@@ -3776,13 +3101,10 @@ function Search-MtpFolderForFiles {
     catch {
     }
 }
+#endregion
 
-# ============================================================
-# BACKUP KINDLE
-# ============================================================
-
+#region Kindle backups
 function Backup-Kindle {
-
     if (-not (Wait-ForKindle -TimeoutSeconds 30)) {
         return
     }
@@ -3790,7 +3112,6 @@ function Backup-Kindle {
     $Storage = Get-KindleInternalStorage
 
     if ($null -eq $Storage) {
-
         Write-Host ""
         Write-Host "Internal Storage unavailable." -ForegroundColor Red
 
@@ -3831,7 +3152,6 @@ function Backup-Kindle {
     $Confirm = Read-Host "Start backup? (Y/N)"
 
     if ($Confirm -notmatch "^[Yy]$") {
-
         Write-Host ""
         Write-Host "Backup cancelled." -ForegroundColor Yellow
 
@@ -3850,7 +3170,6 @@ function Backup-Kindle {
     Write-Host ""
 
     try {
-
         Backup-MtpFolder `
             -Folder $Storage `
             -LogicalPath $(Get-KindleStoragePath) `
@@ -3879,19 +3198,13 @@ function Backup-Kindle {
         Write-Host "  $BackupRoot" -ForegroundColor Green
     }
     catch {
-
         Write-Host ""
         Write-Host "Backup failed:" -ForegroundColor Red
         Write-Host $_.Exception.Message -ForegroundColor Red
     }
 }
 
-# ============================================================
-# BACKUP MTP FOLDER
-# ============================================================
-
 function Backup-MtpFolder {
-
     param(
         [Parameter(Mandatory)]
         $Folder,
@@ -3907,7 +3220,6 @@ function Backup-MtpFolder {
     )
 
     if (-not (Test-Path -LiteralPath $Destination)) {
-
         New-Item `
             -ItemType Directory `
             -Path $Destination `
@@ -3916,13 +3228,10 @@ function Backup-MtpFolder {
     }
 
     foreach ($Item in Get-MtpItems $Folder) {
-
         try {
-
             $Name = [string]$Item.Name
 
             if ($Item.IsFolder) {
-
                 $Stats.Folders++
 
                 $ChildDestination = Join-Path `
@@ -3930,7 +3239,6 @@ function Backup-MtpFolder {
                     $Name
 
                 if (-not (Test-Path -LiteralPath $ChildDestination)) {
-
                     New-Item `
                         -ItemType Directory `
                         -Path $ChildDestination `
@@ -3962,14 +3270,12 @@ function Backup-MtpFolder {
                 $Name
 
             if (Test-Path -LiteralPath $DestinationFile) {
-
                 $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($Name)
                 $Extension = [System.IO.Path]::GetExtension($Name)
 
                 $Counter = 1
 
                 do {
-
                     $AlternativeName = `
                         "{0}_{1}{2}" -f `
                         $BaseName,
@@ -3981,7 +3287,6 @@ function Backup-MtpFolder {
                         $AlternativeName
 
                     $Counter++
-
                 } while (
                     Test-Path -LiteralPath $DestinationFile
                 )
@@ -4005,12 +3310,10 @@ function Backup-MtpFolder {
                 -TimeoutSeconds $VerificationTimeoutSeconds
 
             if ($Verified) {
-
                 Write-Host "  Verified." `
                     -ForegroundColor Green
             }
             else {
-
                 Write-Host "  Could not verify." `
                     -ForegroundColor Yellow
 
@@ -4020,7 +3323,6 @@ function Backup-MtpFolder {
             Start-Sleep -Seconds $BackupCopyWaitSeconds
         }
         catch {
-
             $Stats.Failed++
 
             Write-Host ""
@@ -4032,13 +3334,10 @@ function Backup-MtpFolder {
         }
     }
 }
+#endregion
 
-# ============================================================
-# STORAGE REPORT
-# ============================================================
-
+#region Kindle information and storage
 function Show-KindleStorage {
-
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host " KINDLE STORAGE" -ForegroundColor Cyan
@@ -4052,7 +3351,6 @@ function Show-KindleStorage {
     $Storage = Get-KindleInternalStorage
 
     if ($null -eq $Storage) {
-
         Write-Host ""
         Write-Host "Internal Storage unavailable." -ForegroundColor Red
 
@@ -4089,9 +3387,7 @@ function Show-KindleStorage {
     $KnownSizeFiles = 0
 
     foreach ($File in $Files) {
-
         if ($File.Size -gt 0) {
-
             $TotalSize += $File.Size
             $KnownSizeFiles++
         }
@@ -4119,11 +3415,8 @@ function Show-KindleStorage {
     $StorageItem = $null
 
     try {
-
         foreach ($Item in $KindleFolder.Items()) {
-
             if ([string]$Item.Name -eq "Internal Storage") {
-
                 $StorageItem = $Item
 
                 break
@@ -4134,27 +3427,22 @@ function Show-KindleStorage {
     }
 
     if ($null -ne $StorageItem) {
-
         $FoundInfo = $false
 
         for ($Column = 0; $Column -lt 40; $Column++) {
-
             try {
-
                 $Text = $KindleFolder.GetDetailsOf(
                     $StorageItem,
                     $Column
                 )
 
                 if (-not [string]::IsNullOrWhiteSpace($Text)) {
-
                     if (
                         $Text -match "(?i)free" -or
                         $Text -match "(?i)space" -or
                         $Text -match "(?i)capacity" -or
                         $Text -match "(?i)size"
                     ) {
-
                         Write-Host "  $Text"
 
                         $FoundInfo = $true
@@ -4166,7 +3454,6 @@ function Show-KindleStorage {
         }
 
         if (-not $FoundInfo) {
-
             Write-Host ""
             Write-Host `
                 "Windows MTP did not expose total/free capacity." `
@@ -4174,7 +3461,6 @@ function Show-KindleStorage {
         }
     }
     else {
-
         Write-Host ""
         Write-Host `
             "Internal Storage details unavailable through Shell." `
@@ -4191,104 +3477,7 @@ function Show-KindleStorage {
         -ForegroundColor Gray
 }
 
-# ============================================================
-# DELETE FROM DOCUMENTS
-# ============================================================
-
-function Delete-KindleFiles {
-
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Red
-    Write-Host " DELETE FILE FROM KINDLE" -ForegroundColor Red
-    Write-Host "========================================" -ForegroundColor Red
-
-    if (-not (Wait-ForKindle -TimeoutSeconds 30)) {
-        return
-    }
-
-    $Documents = Get-KindleDocuments
-
-    if ($null -eq $Documents) {
-
-        Write-Host ""
-        Write-Host "Documents folder not found." -ForegroundColor Red
-
-        return
-    }
-
-    $Files = @(Get-MtpFileList -Folder $Documents)
-
-    if ($Files.Count -eq 0) {
-
-        Write-Host ""
-        Write-Host "No files found." -ForegroundColor Yellow
-
-        return
-    }
-
-    Write-Host ""
-    Write-Host "Files:" -ForegroundColor Cyan
-    Write-Host ""
-
-    for ($i = 0; $i -lt $Files.Count; $i++) {
-
-        Write-Host (
-            "[{0,4}] {1,-60} {2,12}" -f `
-            ($i + 1),
-            $Files[$i].Name,
-            (Format-Size $Files[$i].Size)
-        )
-    }
-
-    Write-Host ""
-    Write-Host "Enter 0 to cancel."
-    Write-Host ""
-
-    $Selection = Read-Host "File number"
-
-    if ($Selection -notmatch "^\d+$") {
-
-        Write-Host ""
-        Write-Host "Invalid selection." -ForegroundColor Red
-
-        return
-    }
-
-    $Number = [int]$Selection
-
-    if ($Number -eq 0) {
-
-        Write-Host ""
-        Write-Host "Cancelled." -ForegroundColor Yellow
-
-        return
-    }
-
-    if (
-        $Number -lt 1 -or
-        $Number -gt $Files.Count
-    ) {
-
-        Write-Host ""
-        Write-Host "Invalid file number." -ForegroundColor Red
-
-        return
-    }
-
-    $Selected = $Files[$Number - 1]
-
-    Remove-MtpFile `
-        -Folder $Documents `
-        -Item $Selected.Item `
-        -LogicalPath $(Get-KindlePath)
-}
-
-# ============================================================
-# KINDLE INFORMATION
-# ============================================================
-
 function Show-KindleInfo {
-
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host " KINDLE INFORMATION" -ForegroundColor Cyan
@@ -4317,11 +3506,9 @@ function Show-KindleInfo {
     Write-Host "Internal Storage:" -ForegroundColor Gray
 
     if ($null -ne $Storage) {
-
         Write-Host "  Detected" -ForegroundColor Green
     }
     else {
-
         Write-Host "  NOT FOUND" -ForegroundColor Red
     }
 
@@ -4335,11 +3522,9 @@ function Show-KindleInfo {
     Write-Host "Documents folder:" -ForegroundColor Gray
 
     if ($null -ne $Documents) {
-
         Write-Host "  Detected" -ForegroundColor Green
     }
     else {
-
         Write-Host "  NOT FOUND" -ForegroundColor Red
     }
 
@@ -4362,61 +3547,11 @@ function Show-KindleInfo {
 
     Write-Host ""
 }
+#endregion
 
-# ============================================================
-# OPEN KINDLE IN FILE EXPLORER
-# ============================================================
-
-function Open-KindleExplorer {
-
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host " OPEN KINDLE IN FILE EXPLORER" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
-
-    if (-not (Wait-ForKindle -TimeoutSeconds 30)) {
-        return
-    }
-
-    $Kindle = Get-Kindle
-
-    if ($null -eq $Kindle) {
-
-        Write-Host ""
-        Write-Host "Kindle not available." -ForegroundColor Red
-
-        return
-    }
-
-    try {
-
-        $Kindle.InvokeVerb("open")
-
-        Write-Host ""
-        Write-Host "Kindle opened in File Explorer." `
-            -ForegroundColor Green
-    }
-    catch {
-
-        Write-Host ""
-        Write-Host "Could not automatically open Kindle." `
-            -ForegroundColor Yellow
-
-        Write-Host ""
-        Write-Host "Windows path:" -ForegroundColor Gray
-        Write-Host "  $(Get-KindleRootPath)" `
-            -ForegroundColor Cyan
-    }
-}
-
-# ============================================================
-# OPEN PC BOOKS FOLDER
-# ============================================================
-
+#region Manage Kindle menu
 function Open-PCBooksFolder {
-
     try {
-
         Start-Process `
             explorer.exe `
             -ArgumentList "`"$PcBooksFolder`""
@@ -4426,73 +3561,12 @@ function Open-PCBooksFolder {
         Write-Host "  $PcBooksFolder"
     }
     catch {
-
         Write-Host ""
         Write-Host "Could not open folder." -ForegroundColor Red
     }
 }
 
-# ============================================================
-# REFRESH / RECONNECT
-# ============================================================
-
-function Refresh-Kindle {
-
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host " REFRESH / RECONNECT" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
-
-    Write-Host ""
-    Write-Host "Rechecking Windows MTP devices..." `
-        -ForegroundColor Yellow
-
-    $Kindle = Get-Kindle
-
-    if ($null -eq $Kindle) {
-
-        Write-Host ""
-        Write-Host "Kindle is currently not detected." `
-            -ForegroundColor Red
-
-        Write-Host ""
-        Write-Host "Make sure:"
-        Write-Host "  - USB cable is connected"
-        Write-Host "  - Kindle is unlocked"
-        Write-Host "  - Kindle is showing USB / MTP access"
-
-        return
-    }
-
-    $Storage = Get-KindleInternalStorage
-
-    if ($null -eq $Storage) {
-
-        Write-Host ""
-        Write-Host "Kindle detected, but Internal Storage is unavailable." `
-            -ForegroundColor Yellow
-
-        return
-    }
-
-    Write-Host ""
-    Write-Host "Connection refreshed." -ForegroundColor Green
-
-    Write-Host ""
-    Write-Host "Device:"
-    Write-Host "  $($Kindle.Name)" -ForegroundColor Cyan
-
-    Write-Host ""
-    Write-Host "Internal Storage:"
-    Write-Host "  Available" -ForegroundColor Green
-}
-
-# ============================================================
-# MAIN MENU
-# ============================================================
-
 function Show-MainMenu {
-
     Clear-Host
 
     $Connected = Test-KindleConnection
@@ -4512,13 +3586,11 @@ function Show-MainMenu {
     Write-Host "Kindle status:" -ForegroundColor Gray
 
     if ($Connected) {
-
         Write-Host `
             "  CONNECTED - $(Get-KindleName)" `
             -ForegroundColor Green
     }
     else {
-
         Write-Host `
             "  NOT CONNECTED" `
             -ForegroundColor Yellow
@@ -4534,46 +3606,150 @@ function Show-MainMenu {
     Write-Host "------------------------------------------------------------"
     Write-Host ""
 
-    Write-Host "1. Send books to Kindle"
-    Write-Host "2. Copy books from Kindle"
-    Write-Host "3. Browse Kindle files"
-    Write-Host "4. Backup Kindle"
-    Write-Host "5. Kindle information and storage"
-    Write-Host "6. Open PC books folder"
-    Write-Host "7. Return to Kindle Manager"
+    for ($i = 0; $i -lt $ManageActions.Count; $i++) {
+        Write-Host ('{0}. {1}' -f ($i + 1), $ManageActions[$i].Label)
+    }
+    Write-Host ('{0}. Return to Kindle Manager' -f ($ManageActions.Count + 1))
 
     Write-Host ""
     Write-Host "------------------------------------------------------------"
     Write-Host ""
 }
+#endregion
 
-# ============================================================
-# START APPLICATION
-# ============================================================
+#region Application entry points
+function Invoke-BookDownloader {
+    [CmdletBinding()]
+    param(
+        [ValidateSet('standard', 'alice', 'url', 'manifest')]
+        [string]$Source,
 
-Initialize-LocalFolders
+        [string]$Url,
 
-while ($true) {
-    Show-MainMenu
-    $Choice = Read-Host "Choose an option"
-    if ($Choice -eq '7') { return }
-    Clear-Host
-    switch ($Choice) {
-        '1' { Copy-PCToKindle }
-        '2' { Copy-KindleToPC }
-        '3' { Browse-Kindle }
-        '4' { Backup-Kindle }
-        '5' {
+        [string]$Manifest,
+
+        [string]$Output,
+
+        [switch]$Kindle,
+
+        [string]$KindlePath,
+
+        [ValidateSet('epub', 'pdf', 'mobi', 'kindle')]
+        [string]$Format = 'pdf',
+
+        [int]$Delay = 1000,
+
+        [int]$Limit = 3,   # 0 = unlimited
+
+        [int]$Retries = 1,
+
+        [int]$Timeout = 30000,
+
+        [switch]$DryRun,
+
+        [switch]$Interactive,
+
+        [switch]$Help
+    )
+    Set-StrictMode -Version Latest
+
+    $ErrorActionPreference = 'Stop'
+
+    $Script:SCRIPT_DIR = $script:ProjectRoot
+
+    $Script:INVENTORY_DIR = Join-Path $Script:SCRIPT_DIR 'inventory'
+
+    $Script:INVENTORY_FILE = Join-Path $Script:INVENTORY_DIR 'inventory.json'
+
+    $Script:ALICE_URL = 'https://www.aliceandbooks.com'
+
+    $Script:STANDARD_URL = 'https://standardebooks.org'
+
+    $Script:STANDARD_EBOOKS_URL = "$($Script:STANDARD_URL)/ebooks"
+
+    $Script:USER_AGENT = 'LegalBookDownloader/3.1-ps1 (personal lawful-use downloader)'
+
+    try {
+        Invoke-DownloadWorkflow
+    } catch {
+        Write-Host ''
+        Write-ErrMsg ($_.Exception.Message)
+        if ($_.ScriptStackTrace) {
+            Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+        }
+        throw
+    }
+}
+
+function Invoke-KindleTransfer {
+    $ErrorActionPreference = "Stop"
+
+    $PcRootFolder = $script:ProjectRoot
+
+    $PcBooksFolder = $script:BOOKS_DIR
+
+    $PcBackupFolder = $script:BACKUP_DIR
+
+    $SupportedExtensions = @(
+        ".epub",
+        ".pdf",
+        ".mobi",
+        ".azw",
+        ".azw3",
+        ".kfx",
+        ".txt",
+        ".doc",
+        ".docx",
+        ".rtf",
+        ".html",
+        ".htm",
+        ".cbz",
+        ".cbr"
+    )
+
+    $CopyFlags = 20
+
+    $VerificationTimeoutSeconds = 45
+
+    $VerificationIntervalMs     = 750
+
+    $BackupCopyWaitSeconds = 2
+
+    $Shell = New-Object -ComObject Shell.Application
+
+    foreach ($folder in @($PcBooksFolder, $PcBackupFolder)) { Ensure-Directory $folder }
+
+    $ManageActions = @(
+        @{ Label = 'Send books to Kindle'; Action = { Copy-PCToKindle } }
+        @{ Label = 'Copy books from Kindle'; Action = { Copy-KindleToPC } }
+        @{ Label = 'Browse Kindle files'; Action = { Browse-Kindle } }
+        @{ Label = 'Backup Kindle'; Action = { Backup-Kindle } }
+        @{ Label = 'Kindle information and storage'; Action = {
             Show-KindleInfo
             if (Test-KindleConnection) { Show-KindleStorage }
+        } }
+        @{ Label = 'Open PC books folder'; Action = { Open-PCBooksFolder } }
+    )
+    while ($true) {
+        Show-MainMenu
+        $Choice = Read-Host "Choose an option"
+        if ($Choice -eq [string]($ManageActions.Count + 1)) { return }
+        Clear-Host
+        $index = 0
+        if ([int]::TryParse($Choice, [ref]$index) -and $index -ge 1 -and $index -le $ManageActions.Count) {
+            try { & $ManageActions[$index - 1].Action }
+            catch { Write-ErrMsg $_.Exception.Message }
+        } else {
+            Write-WarnMsg 'Invalid option.'
         }
-        '6' { Open-PCBooksFolder }
-        default { Write-Host 'Invalid option.' -ForegroundColor Yellow }
+        Pause-Screen
     }
-    Pause-Screen
 }
-}
+#endregion
 
+#region Main menu and command-line routing
+# Dot-sourcing loads the functions without opening the interactive menu.
+if ($MyInvocation.InvocationName -eq '.') { return }
 $downloadArguments = @{}
 foreach ($key in $PSBoundParameters.Keys) {
     if ($key -ne 'Mode') { $downloadArguments[$key] = $PSBoundParameters[$key] }
@@ -4609,3 +3785,4 @@ while ($true) {
         Write-Host $_.Exception.Message -ForegroundColor Red
     }
 }
+#endregion
