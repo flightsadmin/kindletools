@@ -16,6 +16,16 @@ try {
         }
         Assert ($script:ProjectRoot -eq $root) 'Application root is incorrect.'
         Assert ($script:BOOKS_DIR -eq (Join-Path $root 'books')) 'Wrong books folder.'
+        $existingTestFolder = Join-Path ([IO.Path]::GetTempPath()) ('kindle-existing-' + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $existingTestFolder | Out-Null
+        try {
+            Set-Content -LiteralPath (Join-Path $existingTestFolder 'Pride and Prejudice.epub') -Value 'existing'
+            $existing = Get-ExistingBookNames -Output $existingTestFolder
+            Assert ($existing.ContainsKey('pride and prejudice.epub')) 'Existing filename detection failed.'
+            Assert (-not $existing.ContainsKey('other.epub')) 'Existing filename detection returned a false match.'
+        } finally {
+            Remove-Item -LiteralPath $existingTestFolder -Recurse -Force
+        }
 
 
         $answers = [Collections.Generic.Queue[string]]::new()

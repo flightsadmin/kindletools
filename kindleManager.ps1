@@ -51,6 +51,7 @@ param(
 $script:ProjectRoot = $PSScriptRoot
 $script:BOOKS_DIR = Join-Path $script:ProjectRoot 'books'
 $script:BACKUP_DIR = Join-Path $script:ProjectRoot 'backup'
+$script:DOWNLOAD_RECORDS_DIR = Join-Path $script:ProjectRoot 'downloads'
 #endregion
 
 #region Shared prompts, logging, and file helpers
@@ -435,7 +436,7 @@ function Get-StandardBooks {
     $maxPages = 200
     $page = 1
     $emptyStreak = 0
-    $limit = if ($Options.Limit -gt 0) { $Options.Limit } else { [int]::MaxValue }
+    $limit = if ($Options.CandidateLimit -gt 0) { $Options.CandidateLimit } elseif ($Options.Limit -gt 0) { $Options.Limit } else { [int]::MaxValue }
 
     $bookItemRegex = [regex]'<li\b[^>]*typeof\s*=\s*["'']schema:Book["''][^>]*about\s*=\s*["'']([^"'']+)["''][^>]*>([\s\S]*?)</li>'
     $nameRegex = [regex]'property\s*=\s*["'']schema:name["''][^>]*>([^<]+)<'
@@ -505,7 +506,7 @@ function Build-StandardDownloadList {
         throw 'No books were found on Standard Ebooks.'
     }
 
-    $limit = if ($Options.Limit -gt 0) { $Options.Limit } else { $books.Count }
+    $limit = if ($Options.CandidateLimit -gt 0) { $Options.CandidateLimit } elseif ($Options.Limit -gt 0) { $Options.Limit } else { $books.Count }
     $selected = $books | Select-Object -First $limit
     $downloads = New-Object System.Collections.Generic.List[object]
 
@@ -594,7 +595,7 @@ function Build-AliceDownloadList {
         throw 'No books were found on AliceAndBooks.'
     }
 
-    $limit = if ($Options.Limit -gt 0) { $Options.Limit } else { $books.Count }
+    $limit = if ($Options.CandidateLimit -gt 0) { $Options.CandidateLimit } elseif ($Options.Limit -gt 0) { $Options.Limit } else { $books.Count }
     $selected = $books | Select-Object -First $limit
     $downloads = New-Object System.Collections.Generic.List[object]
 
@@ -626,7 +627,7 @@ function Build-GutenbergDownloadList {
         (-not $Options.Search -or ([string]$_.Title).IndexOf($Options.Search, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
          ([string]$_.Authors).IndexOf($Options.Search, [StringComparison]::OrdinalIgnoreCase) -ge 0)
     })
-    if ($Options.Limit -gt 0) { $matches = @($matches | Select-Object -First $Options.Limit) }
+    if ($Options.CandidateLimit -gt 0) { $matches = @($matches | Select-Object -First $Options.CandidateLimit) }
     foreach ($book in $matches) {
         $id = [string]$book.'Text#'
         if ($id -notmatch '^\d+$') { continue }
@@ -676,7 +677,7 @@ function Build-GlobalGreyDownloadList {
                 $book = Get-GlobalGreyDownload -PageUrl $link.Url -Title $link.Text -Options $Options
                 $book
                 $count++
-                if ($Options.Limit -gt 0 -and $count -ge $Options.Limit) { return }
+                if ($Options.CandidateLimit -gt 0 -and $count -ge $Options.CandidateLimit) { return }
             } catch { Write-WarnMsg $_.Exception.Message }
         }
         $next = $links | Where-Object {
@@ -792,6 +793,57 @@ function Build-DownloadList {
         'manifest' { return Build-ManifestDownloadList -Options $Options }
         default    { throw "Unsupported source: $($Options.Source)" }
     }
+}
+
+function Get-DownloadFileName {
+    param($Book, [string]$Format)
+    $extension = if ($Book.PSObject.Properties.Name -contains 'Extension' -and $Book.Extension) { $Book.Extension } else { $Format }
+    $title = if ($Book.Title) { $Book.Title } else { Get-FilenameFromUrl $Book.Url $Format }
+    $name = Get-SafeFilename $title
+    if (-not $name.ToLowerInvariant().EndsWith(".$extension")) { $name = "$name.$extension" }
+    return $name
+}
+
+function Get-ExistingBookNames {
+    param([string]$Output)
+    if (-not (Test-Path -LiteralPath $Output -PathType Container)) { return @{} }
+    $names = @{}
+    foreach ($file in Get-ChildItem -LiteralPath $Output -File -ErrorAction SilentlyContinue) {
+        $names[$file.Name.ToLowerInvariant()] = $true
+    }
+    return $names
+}
+
+function Get-DownloadRecordPath {
+    param([string]$Source)
+    $safeSource = ($Source -replace '[^a-zA-Z0-9_-]', '_').ToLowerInvariant()
+    return (Join-Path $script:DOWNLOAD_RECORDS_DIR "$safeSource.json")
+}
+
+function Read-DownloadRecords {
+    param([string]$Source)
+    $path = Get-DownloadRecordPath $Source
+    $records = @{}
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $records }
+    try {
+        $data = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($record in @($data.records)) {
+            if ($record.filename) { $records[$record.filename.ToLowerInvariant()] = $record }
+        }
+    } catch {
+        Write-WarnMsg "Could not read download record $path; existing files will still be checked."
+    }
+    return $records
+}
+
+function Save-DownloadRecord {
+    param([string]$Source, $Book, [string]$Filename, [string]$Format, [Int64]$Size)
+    Ensure-Directory $script:DOWNLOAD_RECORDS_DIR
+    $path = Get-DownloadRecordPath $Source
+    $records = @(Read-DownloadRecords -Source $Source).Values
+    $records = @($records | Where-Object { $_.filename -ine $Filename })
+    $records += [pscustomobject]@{ title = [string]$Book.Title; url = [string]$Book.Url; filename = $Filename; format = $Format; size = $Size; downloadedAt = (Get-Date).ToUniversalTime().ToString('o') }
+    [pscustomobject]@{ source = $Source; records = @($records | Sort-Object filename) } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path -Encoding UTF8
 }
 #endregion
 
@@ -1327,6 +1379,7 @@ function Invoke-DownloadWorkflow {
 
     Ensure-Directory $options.Output
     Ensure-Directory $Script:BACKUP_DIR
+    Ensure-Directory $script:DOWNLOAD_RECORDS_DIR
 
     Write-Success "Books folder: $($options.Output)"
     Write-Success "Backup folder: $($Script:BACKUP_DIR)"
@@ -1349,7 +1402,27 @@ function Invoke-DownloadWorkflow {
     }
 
     Write-Step "Building download list from $($options.Source)..."
+    $existingNames = Get-ExistingBookNames -Output $options.Output
+    $downloadRecords = Read-DownloadRecords -Source $options.Source
+    foreach ($recordName in $downloadRecords.Keys) { $existingNames[$recordName] = $true }
+    $options | Add-Member -NotePropertyName ExistingNames -NotePropertyValue $existingNames -Force
+    $options | Add-Member -NotePropertyName CandidateLimit -NotePropertyValue $(if ($options.Limit -gt 0) { [Math]::Max($options.Limit * 5, 25) } else { 0 }) -Force
     $downloads = @(Build-DownloadList -Options $options)
+
+    $available = New-Object System.Collections.Generic.List[object]
+    $skippedExisting = 0
+    foreach ($candidate in $downloads) {
+        $candidateFormat = Normalize-Format $(if ($candidate.Format) { $candidate.Format } else { $options.Format })
+        $candidateName = Get-DownloadFileName -Book $candidate -Format $candidateFormat
+        if ($existingNames.ContainsKey($candidateName.ToLowerInvariant())) {
+            $skippedExisting++
+            continue
+        }
+        $available.Add($candidate)
+        if ($options.Limit -gt 0 -and $available.Count -ge $options.Limit) { break }
+    }
+    $downloads = @($available)
+    if ($skippedExisting -gt 0) { Write-WarnMsg "Skipped $skippedExisting book(s) already present in $($options.Output)." }
 
     if ($downloads.Count -eq 0) {
         Write-WarnMsg 'No downloadable books were found.'
@@ -1370,12 +1443,7 @@ function Invoke-DownloadWorkflow {
             $format
         }
 
-        $filename = Get-SafeFilename $(if ($book.Title) { $book.Title } else { Get-FilenameFromUrl $book.Url $format })
-        $finalFilename = if ($filename.ToLowerInvariant().EndsWith(".$ext")) {
-            $filename
-        } else {
-            "$filename.$ext"
-        }
+        $finalFilename = Get-DownloadFileName -Book $book -Format $format
         $destination = Join-Path $options.Output $finalFilename
 
 
@@ -1389,6 +1457,7 @@ function Invoke-DownloadWorkflow {
             $item = Get-Item -LiteralPath $destination
             $mb = [Math]::Round($item.Length / 1MB, 2)
             Write-Success "Downloaded $mb MB"
+            Save-DownloadRecord -Source $options.Source -Book $book -Filename $finalFilename -Format $format -Size $item.Length
 
             $kindleDest = $null
             if ($kindlePath) {

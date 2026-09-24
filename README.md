@@ -47,9 +47,13 @@ Choose **Global Grey** or **Project Gutenberg** to see an optional title-filter 
 
 By default, downloads are limited to three books, with a one-second delay between books and one attempt per book. Enter `0` for an unlimited count. A dry run checks paths and source availability without saving books or creating folders; catalogue and manifest checks inspect a limited sample.
 
+Existing files are skipped automatically when their destination filename matches the incoming title and format. For catalogue sources, the script requests extra candidates and continues past skipped titles so your limit means “new books to download.” A skip message shows how many existing titles were ignored. If you want a different edition, rename or remove the old file first.
+
+Successful downloads are also recorded per source as JSON under `downloads` (`standard.json`, `gutenberg.json`, `globalgrey.json`, and so on). The records are loaded on the next run and used with the actual files to skip repeats. If you delete a recorded book, the downloader notices that the file is missing and permits the book to be downloaded again.
+
 Gutenberg uses at least two seconds between book downloads. Global Grey uses at least one second between catalogue/book-page requests and downloads. A higher `-Delay` is respected.
 
-Downloads are validated before being moved into place. HTML/XML responses are rejected, and PDF/EPUB headers are checked. A successful download replaces an existing file with the same destination name. The script displays successful and failed download totals without maintaining a download-history file.
+Downloads are validated before being moved into place. HTML/XML responses are rejected, and PDF/EPUB headers are checked. Normal repeat runs skip recorded or existing files; a successful new download is added to the source record immediately.
 
 ## Manage Kindle
 
@@ -83,6 +87,7 @@ KindleTools/
   KindleManager.ps1
   books/                 Default download and PC transfer folder
   backup/                Timestamped Kindle backups
+  downloads/             Per-source JSON records of successful downloads
 ```
 
 Folders are created when needed. Relative download, manifest, and Kindle paths are resolved from the script's directory, even when it is launched from another working directory. `-Output` changes the downloader's destination; the Manage Kindle menu continues to use the `books` folder beside the script.
