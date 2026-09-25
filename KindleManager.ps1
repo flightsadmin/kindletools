@@ -4403,7 +4403,7 @@ function Invoke-BookDownloader {
         [int]$Timeout = 30000,
 
         [ValidateRange(0, 2147483647)]
-        [int]$MaxRuntimeMinutes = 10,
+        [int]$MaxRuntimeMinutes = 0,
 
         [switch]$DryRun,
 
