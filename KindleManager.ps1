@@ -653,7 +653,6 @@ function Get-HtmlLinks {
 }
 
 function Get-StandardSlugFromPath([string]$Pathname) {
-    $parts = $Pathname.Trim('/').Replace('ebooks/', '') -split '/' | Where-Object { $_ }
     # pathname like /ebooks/author/title/...
     $clean = ($Pathname -replace '^/ebooks/', '' -replace '/+$', '')
     return ($clean -split '/' -join '_')
@@ -1253,48 +1252,53 @@ function Save-DownloadRecord {
     }
 }
 
-function Set-DownloadRecordTransferred {
-    param([Parameter(Mandatory)][string]$Filename)
-    if (-not (Test-Path -LiteralPath $script:DOWNLOAD_RECORDS_DIR -PathType Container)) { return }
-    $lowerFilename = $Filename.ToLowerInvariant()
+function Get-AllDownloadRecords {
+    if (-not (Test-Path -LiteralPath $script:DOWNLOAD_RECORDS_DIR -PathType Container)) { return @() }
+    $results = New-Object System.Collections.Generic.List[object]
     foreach ($recordFile in Get-ChildItem -LiteralPath $script:DOWNLOAD_RECORDS_DIR -Filter '*.json' -File -ErrorAction SilentlyContinue) {
         try {
-            $rawJson = Get-Content -LiteralPath $recordFile.FullName -Raw -Encoding UTF8
-            $data = $rawJson | ConvertFrom-Json
-            if (-not $data -or -not $data.records) { continue }
-            $modified = $false
-            foreach ($rec in @($data.records)) {
-                if ($rec.filename -and $rec.filename.ToLowerInvariant() -eq $lowerFilename) {
-                    $rec | Add-Member -NotePropertyName transferred -NotePropertyValue $true -Force
-                    $modified = $true
+            $data = Get-Content -LiteralPath $recordFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($data -and $data.records) {
+                foreach ($rec in @($data.records)) {
+                    if ($rec.filename) {
+                        $results.Add([pscustomobject]@{ RecordFile = $recordFile.FullName; Record = $rec; Data = $data })
+                    }
                 }
             }
-            if ($modified) {
-                $stagedPath = "$($recordFile.FullName).$([guid]::NewGuid().ToString('N')).tmp"
-                $jsonStr = $data | ConvertTo-Json -Depth 5
-                [IO.File]::WriteAllText($stagedPath, $jsonStr, [Text.UTF8Encoding]::new($false))
-                Complete-StagedFile -StagedPath $stagedPath -Destination $recordFile.FullName
-            }
+        } catch { }
+    }
+    return $results.ToArray()
+}
+
+function Set-DownloadRecordTransferred {
+    param([Parameter(Mandatory)][string]$Filename)
+    $lowerFilename = $Filename.ToLowerInvariant()
+    $modifiedFiles = @{}
+    foreach ($item in (Get-AllDownloadRecords)) {
+        if ($item.Record.filename.ToLowerInvariant() -eq $lowerFilename) {
+            $item.Record | Add-Member -NotePropertyName transferred -NotePropertyValue $true -Force
+            $modifiedFiles[$item.RecordFile] = $item.Data
+        }
+    }
+    foreach ($file in $modifiedFiles.Keys) {
+        try {
+            $stagedPath = "$file.$([guid]::NewGuid().ToString('N')).tmp"
+            $jsonStr = $modifiedFiles[$file] | ConvertTo-Json -Depth 5
+            [IO.File]::WriteAllText($stagedPath, $jsonStr, [Text.UTF8Encoding]::new($false))
+            Complete-StagedFile -StagedPath $stagedPath -Destination $file
         } catch { }
     }
 }
 
 function Test-BookTransferred {
     param([Parameter(Mandatory)][string]$Filename)
-    if (-not (Test-Path -LiteralPath $script:DOWNLOAD_RECORDS_DIR -PathType Container)) { return $false }
     $lowerFilename = $Filename.ToLowerInvariant()
-    foreach ($recordFile in Get-ChildItem -LiteralPath $script:DOWNLOAD_RECORDS_DIR -Filter '*.json' -File -ErrorAction SilentlyContinue) {
-        try {
-            $data = Get-Content -LiteralPath $recordFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-            if (-not $data -or -not $data.records) { continue }
-            foreach ($rec in @($data.records)) {
-                if ($rec.filename -and $rec.filename.ToLowerInvariant() -eq $lowerFilename) {
-                    if ($rec.PSObject.Properties.Name -contains 'transferred') {
-                        return [bool]$rec.transferred
-                    }
-                }
+    foreach ($item in (Get-AllDownloadRecords)) {
+        if ($item.Record.filename.ToLowerInvariant() -eq $lowerFilename) {
+            if ($item.Record.PSObject.Properties.Name -contains 'transferred') {
+                return [bool]$item.Record.transferred
             }
-        } catch { }
+        }
     }
     return $false
 }
@@ -4436,10 +4440,7 @@ function Invoke-BookDownloader {
 function Invoke-KindleTransfer {
     $ErrorActionPreference = "Stop"
 
-    $PcRootFolder = $script:ProjectRoot
-
     $PcBooksFolder = $script:BOOKS_DIR
-
     $PcBackupFolder = $script:BACKUP_DIR
 
     $SupportedExtensions = @(
