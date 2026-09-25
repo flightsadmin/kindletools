@@ -35,8 +35,8 @@ try {
             return $answers.Dequeue()
         }
         # Invalid choices retry; unlimited books are accepted; cancellation returns.
-        # Source, category selection, format, limit, and final confirmation.
-        @('bad', '1', '', '2', '-1', '0', 'n') | ForEach-Object { $answers.Enqueue($_) }
+        # Source, format, limit, and final confirmation.
+        @('bad', '1', '2', '-1', '0', 'n') | ForEach-Object { $answers.Enqueue($_) }
         Invoke-BookDownloader
         Assert ($answers.Count -eq 0) 'Downloader did not complete the expected prompts.'
 
