@@ -65,7 +65,7 @@ if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
 $script:BOOKS_DIR = Join-Path $script:ProjectRoot 'books'
 $script:BACKUP_DIR = Join-Path $script:ProjectRoot 'backup'
 $script:DOWNLOAD_RECORDS_DIR = Join-Path $script:ProjectRoot 'downloads'
-$script:KindleDirectExtensions = @('.azw3', '.azw', '.mobi', '.pdf')
+$script:KindleDirectExtensions = @('.epub', '.azw3', '.azw', '.mobi', '.pdf')
 #endregion
 
 #region Shared prompts, logging, and file helpers
