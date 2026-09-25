@@ -51,7 +51,7 @@ The interactive flow asks for a source, format, maximum number of books, and whe
 | Direct authorized URL | Downloads a book from an HTTP or HTTPS file URL you provide. |
 | JSON manifest | Downloads a list of book URLs from a local JSON file. |
 
-The default format is **MOBI / Kindle**. Standard Ebooks and Global Grey provide Kindle AZW3 files; Gutenberg provides Kindle format. Standard Ebooks and Gutenberg also offer EPUB, while Global Grey and AliceAndBooks may offer PDF. The script downloads available files; it does not convert books between formats. Use material you are authorized to download.
+The default format is **EPUB** (recommended for KOReader). Standard Ebooks and Gutenberg offer EPUB and Kindle formats, while Global Grey and AliceAndBooks may offer PDF. The script downloads available files; it does not convert books between formats. Use material you are authorized to download.
 
 The interactive downloader proceeds directly from source selection to download settings. Global Grey and Gutenberg use their fiction catalogues and offer a title filter; Gutenberg also matches author names. Gutenberg loads its complete CSV catalogue into memory without saving a catalogue folder or history file.
 
@@ -177,7 +177,7 @@ Automatic copying during downloads (`-Kindle`) uses a filesystem path or a detec
 | `-Url` | Direct HTTP/HTTPS book URL; selects the URL source |
 | `-Manifest` | JSON file path; selects the manifest source |
 | `-Output` | Download destination; default `books` beside the script |
-| `-Format` | `pdf`, `epub`, `mobi`, or `kindle`; default `mobi`. `kindle` aliases `mobi`; Standard Ebooks and Global Grey supply AZW3. Gutenberg supports EPUB and Kindle, not PDF. |
+| `-Format` | `epub`, `pdf`, `mobi`, or `kindle`; default `epub`. `kindle` aliases `mobi`; Standard Ebooks and Global Grey supply AZW3. Gutenberg supports EPUB and Kindle, not PDF. |
 | `-Limit` | Maximum books; default `3`; `0` means unlimited |
 | `-Delay` | Milliseconds between books; default `1000` |
 | `-Retries` | Total attempts per book, including the first; default `1` |

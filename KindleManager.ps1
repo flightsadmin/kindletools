@@ -7,8 +7,10 @@ Download books and manage a Kindle from one self-contained script.
 .\KindleManager.ps1 -Source standard -Format epub -Limit 3
 #>
 param(
-    [ValidateSet('Menu', 'Download', 'Transfer', 'Test')]
+    [ValidateSet('Menu', 'Download', 'Transfer', 'Test', 'Inspect')]
     [string]$Mode = 'Menu',
+
+    [string]$Inspect,
 
     [ValidateSet('all', 'standard', 'alice', 'globalgrey', 'gutenberg', 'url', 'manifest')]
     [string]$Source,
@@ -26,7 +28,7 @@ param(
     [string]$KindlePath,
 
     [ValidateSet('pdf', 'epub', 'mobi', 'kindle')]
-    [string]$Format = 'mobi',
+    [string]$Format = 'epub',
 
     [ValidateRange(0, 2147483647)]
     [int]$Delay = 1000,
@@ -99,7 +101,8 @@ function Complete-StagedFile([string]$StagedPath, [string]$Destination) {
 
 function Repair-EpubUncopyrightMetadata {
     param(
-        [Parameter(Mandatory)][string]$Path
+        [Parameter(Mandatory)][string]$Path,
+        [string]$ReplacementText
     )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or [IO.Path]::GetExtension($Path).ToLowerInvariant() -ne '.epub') {
@@ -126,9 +129,22 @@ function Repair-EpubUncopyrightMetadata {
         $stream.Dispose()
 
         if ($content -match '(?is)<dc:(publisher|rights)[^>]*>[^<]*uncopyright[^<]*</dc:\1>') {
-            $entryName = $opfEntry.FullName
-            $newContent = [regex]::Replace($content, '(?is)<dc:(publisher|rights)[^>]*>[^<]*uncopyright[^<]*</dc:\1>', '')
+            $titleToUse = $ReplacementText
+            if ([string]::IsNullOrWhiteSpace($titleToUse)) {
+                $titleMatch = [regex]::Match($content, '(?is)<dc:title[^>]*>(.*?)</dc:title>')
+                if ($titleMatch.Success) {
+                    $titleToUse = [regex]::Replace($titleMatch.Groups[1].Value, '<[^>]+>', '').Trim()
+                }
+            }
 
+            if ([string]::IsNullOrWhiteSpace($titleToUse)) {
+                $newContent = [regex]::Replace($content, '(?is)<dc:(publisher|rights)[^>]*>[^<]*uncopyright[^<]*</dc:\1>', '')
+            } else {
+                $escapedTitle = [System.Security.SecurityElement]::Escape($titleToUse)
+                $newContent = [regex]::Replace($content, '(?is)<dc:(publisher|rights)[^>]*>[^<]*uncopyright[^<]*</dc:\1>', "<dc:`$1>$escapedTitle</dc:`$1>")
+            }
+
+            $entryName = $opfEntry.FullName
             $opfEntry.Delete()
             $newEntry = $zip.CreateEntry($entryName)
             $newStream = $newEntry.Open()
@@ -176,6 +192,83 @@ function Invoke-EpubMetadataCleanup {
         Write-Success "Cleaned metadata in $cleanedCount EPUB file(s)."
     } else {
         Write-Host "All EPUB files already have clean metadata." -ForegroundColor Gray
+    }
+}
+
+function Get-EpubMetadata {
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Path
+    )
+
+    $resolvedPath = Resolve-PortablePath $Path
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        Write-ErrMsg "File not found: $resolvedPath"
+        return
+    }
+
+    if ([IO.Path]::GetExtension($resolvedPath).ToLowerInvariant() -ne '.epub') {
+        Write-WarnMsg "Only .epub files can be directly inspected. Format: $([IO.Path]::GetExtension($resolvedPath))"
+        return
+    }
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($resolvedPath)
+        $opfEntry = $zip.Entries | Where-Object { $_.FullName -like '*.opf' } | Select-Object -First 1
+        if (-not $opfEntry) {
+            Write-WarnMsg "No OPF metadata package found inside $resolvedPath"
+            $zip.Dispose()
+            return
+        }
+
+        $stream = $opfEntry.Open()
+        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+        $xmlText = $reader.ReadToEnd()
+        $reader.Dispose(); $stream.Dispose(); $zip.Dispose()
+
+        [xml]$xml = $xmlText
+        $metaNode = $xml.SelectSingleNode('//*[local-name()="metadata"]')
+        if (-not $metaNode) {
+            Write-WarnMsg "No metadata section found in XML package."
+            return
+        }
+
+        Write-Step "Metadata for $([IO.Path]::GetFileName($resolvedPath))"
+        $elements = @()
+        foreach ($child in $metaNode.ChildNodes) {
+            if ($child.NodeType -eq 'Element' -and -not [string]::IsNullOrWhiteSpace($child.InnerText)) {
+                $elements += [pscustomobject]@{ Name = $child.LocalName; Text = $child.InnerText.Trim() }
+            }
+        }
+
+        # Highlight key fields at the top
+        $keyNames = @('title', 'creator', 'publisher', 'rights', 'language', 'identifier')
+        $keyFields = $elements | Where-Object { $_.Name -in $keyNames }
+        if ($keyFields) {
+            Write-Host "--- Core Bibliographic Fields ---" -ForegroundColor Yellow
+            foreach ($item in $keyFields) {
+                $label = switch ($item.Name) {
+                    'title'      { 'Title' }
+                    'creator'    { 'Author' }
+                    'publisher'  { 'Publisher' }
+                    'rights'     { 'Copyright / Rights' }
+                    'language'   { 'Language' }
+                    'identifier' { 'Identifier' }
+                    default      { $item.Name }
+                }
+                Write-Host ("  {0,-20} : {1}" -f $label, $item.Text) -ForegroundColor Green
+            }
+            Write-Host ""
+        }
+
+        Write-Host "--- All Package Metadata ---" -ForegroundColor Gray
+        foreach ($item in $elements) {
+            Write-Host ("  {0,-15} : {1}" -f $item.Name, $item.Text) -ForegroundColor Cyan
+        }
+    } catch {
+        Write-ErrMsg "Could not read metadata: $($_.Exception.Message)"
     }
 }
 
@@ -350,9 +443,10 @@ function Get-SafeFilename([string]$Value, [string]$Fallback = 'book') {
 }
 
 function Resolve-PortablePath([string]$Value) {
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $Script:SCRIPT_DIR }
+    $baseDir = if (-not [string]::IsNullOrWhiteSpace($Script:SCRIPT_DIR)) { $Script:SCRIPT_DIR } else { $script:ProjectRoot }
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $baseDir }
     if ([IO.Path]::IsPathRooted($Value)) { return [IO.Path]::GetFullPath($Value) }
-    return [IO.Path]::GetFullPath((Join-Path $Script:SCRIPT_DIR $Value))
+    return [IO.Path]::GetFullPath((Join-Path $baseDir $Value))
 }
 
 function Get-ExtensionFromUrl([string]$Url, [string]$Fallback = 'epub') {
@@ -1132,13 +1226,23 @@ function Read-DownloadRecords {
 }
 
 function Save-DownloadRecord {
-    param([string]$Source, $Book, [string]$Filename, [string]$Format, [Int64]$Size)
+    param([string]$Source, $Book, [string]$Filename, [string]$Format, [Int64]$Size, [bool]$Transferred = $false)
     Ensure-Directory $script:DOWNLOAD_RECORDS_DIR
     $path = Get-DownloadRecordPath $Source
     $recordTable = Read-DownloadRecords -Source $Source
+    $existingRecord = if ($recordTable.ContainsKey($Filename.ToLowerInvariant())) { $recordTable[$Filename.ToLowerInvariant()] } else { $null }
+    $isTransferred = if ($null -ne $existingRecord -and $existingRecord.PSObject.Properties.Name -contains 'transferred') { [bool]$existingRecord.transferred } else { $Transferred }
     $records = @($recordTable.Values)
     $records = @($records | Where-Object { $_.filename -ine $Filename })
-    $records += [pscustomobject]@{ title = [string]$Book.Title; url = [string]$Book.Url; filename = $Filename; format = $Format; size = $Size; downloadedAt = (Get-Date).ToUniversalTime().ToString('o') }
+    $records += [pscustomobject]@{
+        title        = [string]$Book.Title;
+        url          = [string]$Book.Url;
+        filename     = $Filename;
+        format       = $Format;
+        size         = $Size;
+        transferred  = $isTransferred;
+        downloadedAt = (Get-Date).ToUniversalTime().ToString('o')
+    }
     $stagedPath = "$path.$([guid]::NewGuid().ToString('N')).tmp"
     try {
         $json = [pscustomobject]@{ source = $Source; records = @($records | Sort-Object filename) } | ConvertTo-Json -Depth 5
@@ -1147,6 +1251,52 @@ function Save-DownloadRecord {
     } finally {
         if ([IO.File]::Exists($stagedPath)) { [IO.File]::Delete($stagedPath) }
     }
+}
+
+function Set-DownloadRecordTransferred {
+    param([Parameter(Mandatory)][string]$Filename)
+    if (-not (Test-Path -LiteralPath $script:DOWNLOAD_RECORDS_DIR -PathType Container)) { return }
+    $lowerFilename = $Filename.ToLowerInvariant()
+    foreach ($recordFile in Get-ChildItem -LiteralPath $script:DOWNLOAD_RECORDS_DIR -Filter '*.json' -File -ErrorAction SilentlyContinue) {
+        try {
+            $rawJson = Get-Content -LiteralPath $recordFile.FullName -Raw -Encoding UTF8
+            $data = $rawJson | ConvertFrom-Json
+            if (-not $data -or -not $data.records) { continue }
+            $modified = $false
+            foreach ($rec in @($data.records)) {
+                if ($rec.filename -and $rec.filename.ToLowerInvariant() -eq $lowerFilename) {
+                    $rec | Add-Member -NotePropertyName transferred -NotePropertyValue $true -Force
+                    $modified = $true
+                }
+            }
+            if ($modified) {
+                $stagedPath = "$($recordFile.FullName).$([guid]::NewGuid().ToString('N')).tmp"
+                $jsonStr = $data | ConvertTo-Json -Depth 5
+                [IO.File]::WriteAllText($stagedPath, $jsonStr, [Text.UTF8Encoding]::new($false))
+                Complete-StagedFile -StagedPath $stagedPath -Destination $recordFile.FullName
+            }
+        } catch { }
+    }
+}
+
+function Test-BookTransferred {
+    param([Parameter(Mandatory)][string]$Filename)
+    if (-not (Test-Path -LiteralPath $script:DOWNLOAD_RECORDS_DIR -PathType Container)) { return $false }
+    $lowerFilename = $Filename.ToLowerInvariant()
+    foreach ($recordFile in Get-ChildItem -LiteralPath $script:DOWNLOAD_RECORDS_DIR -Filter '*.json' -File -ErrorAction SilentlyContinue) {
+        try {
+            $data = Get-Content -LiteralPath $recordFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            if (-not $data -or -not $data.records) { continue }
+            foreach ($rec in @($data.records)) {
+                if ($rec.filename -and $rec.filename.ToLowerInvariant() -eq $lowerFilename) {
+                    if ($rec.PSObject.Properties.Name -contains 'transferred') {
+                        return [bool]$rec.transferred
+                    }
+                }
+            }
+        } catch { }
+    }
+    return $false
 }
 #endregion
 
@@ -1199,12 +1349,13 @@ function Download-BookFile {
 
             Assert-BookFile -Path $tempFile -Format ([IO.Path]::GetExtension($Destination).TrimStart('.'))
 
-            Complete-StagedFile -StagedPath $tempFile -Destination $Destination
             if ([IO.Path]::GetExtension($Destination).ToLowerInvariant() -eq '.epub') {
-                if (Repair-EpubUncopyrightMetadata -Path $Destination) {
-                    Write-Success "Cleaned 'Uncopyright' metadata tag from $([IO.Path]::GetFileName($Destination))."
+                if (Repair-EpubUncopyrightMetadata -Path $tempFile) {
+                    Write-Success "Replaced 'Uncopyright' metadata tag with book title in $([IO.Path]::GetFileName($Destination))."
                 }
             }
+
+            Complete-StagedFile -StagedPath $tempFile -Destination $Destination
             return
         } catch {
             $lastError = $_
@@ -1307,6 +1458,7 @@ function Copy-ToKindle {
         Remove-Item -LiteralPath $dest -Force
     }
     Copy-Item -LiteralPath $Source -Destination $dest -Force
+    Set-DownloadRecordTransferred -Filename ([IO.Path]::GetFileName($Source))
     return $dest
 }
 
@@ -1326,6 +1478,7 @@ function Copy-ToKindleMtp {
     if (-not (Wait-ForMtpItem -Folder $Documents -Name $name -TimeoutSeconds 45)) {
         throw "Could not verify $name on the Kindle."
     }
+    Set-DownloadRecordTransferred -Filename $name
     return (Get-KindlePath + '\' + $name)
 }
 #endregion
@@ -1381,14 +1534,17 @@ function Invoke-Interactive {
         } while ($source -eq 'all' -and -not $search)
     }
     $formatChoices = @(
-        @{ Key = '1'; Label = 'MOBI / Kindle (AZW3 on Standard Ebooks and Global Grey)'; Value = 'mobi' }
-        @{ Key = '2'; Label = 'EPUB'; Value = 'epub' }
-        @{ Key = '3'; Label = 'PDF (where available)'; Value = 'pdf' }
+        @{ Key = '1'; Label = 'EPUB (recommended for KOReader)'; Value = 'epub' }
+        @{ Key = '2'; Label = 'PDF (where available)'; Value = 'pdf' }
+        @{ Key = '3'; Label = 'MOBI / Kindle (AZW3 on Standard Ebooks and Global Grey)'; Value = 'mobi' }
     )
 
     $defaultFormat = '1'
     if ($source -in @('standard', 'gutenberg')) {
         $formatChoices = @($formatChoices | Where-Object { $_.Value -ne 'pdf' })
+        for ($i = 0; $i -lt $formatChoices.Count; $i++) {
+            $formatChoices[$i].Key = [string]($i + 1)
+        }
     }
     $format = Read-Choice -Prompt '2 / 4  Book format' -DefaultKey $defaultFormat -Choices $formatChoices
 
@@ -2336,6 +2492,7 @@ function Copy-PCToKindle {
     Write-Host "Transfer mode:" -ForegroundColor Gray
     Write-Host "  1. Transfer all"
     Write-Host "  2. Select files"
+    Write-Host "  3. Only new books (untransferred)"
 
     Write-Host ""
 
@@ -2353,17 +2510,27 @@ function Copy-PCToKindle {
 
         $Files = $SelectedFiles
     }
+    elseif ($Mode -eq "3") {
+        $SelectedFiles = @($Files | Where-Object { -not (Test-BookTransferred $_.Name) })
+        if ($SelectedFiles.Count -eq 0) {
+            Write-Host ""
+            Write-Host "No untransferred books found." -ForegroundColor Yellow
+            return
+        }
+        $Files = $SelectedFiles
+    }
 
     Write-Host ""
     Write-Host "Existing files on Kindle:" -ForegroundColor Cyan
     Write-Host "  1. Overwrite all"
     Write-Host "  2. Skip all"
     Write-Host "  3. Ask for each file"
+    Write-Host "  4. Only new books (untransferred)"
     Write-Host ""
     $ConflictPolicy = Read-Host "Choose existing-file policy [2]"
     if ([string]::IsNullOrWhiteSpace($ConflictPolicy)) { $ConflictPolicy = "2" }
-    while ($ConflictPolicy -notin @("1", "2", "3")) {
-        Write-Host "Choose 1, 2, or 3." -ForegroundColor Red
+    while ($ConflictPolicy -notin @("1", "2", "3", "4")) {
+        Write-Host "Choose 1, 2, 3, or 4." -ForegroundColor Red
         $ConflictPolicy = Read-Host "Choose existing-file policy [2]"
     }
 
@@ -2380,6 +2547,11 @@ function Copy-PCToKindle {
 
         Write-Host "[$Count/$($Files.Count)] $($File.Name)" `
             -ForegroundColor Cyan
+
+        if ($ConflictPolicy -eq "4" -and (Test-BookTransferred $File.Name)) {
+            Write-Host "    Skipped (already transferred)." -ForegroundColor DarkGray
+            continue
+        }
 
         try {
             $Existing = Find-MtpItem `
@@ -2445,6 +2617,7 @@ function Copy-PCToKindle {
                 Write-Host "    Verified on Kindle." `
                     -ForegroundColor Green
 
+                Set-DownloadRecordTransferred -Filename $File.Name
                 $Success++
             }
             else {
@@ -4211,7 +4384,7 @@ function Invoke-BookDownloader {
         [string]$KindlePath,
 
         [ValidateSet('epub', 'pdf', 'mobi', 'kindle')]
-        [string]$Format = 'mobi',
+        [string]$Format = 'epub',
 
         [ValidateRange(0, 2147483647)]
         [int]$Delay = 1000,
@@ -4363,6 +4536,15 @@ function Invoke-KindleTests {
 #region Main menu and command-line routing
 # Dot-sourcing loads the functions without opening the interactive menu.
 if ($MyInvocation.InvocationName -eq '.') { return }
+if ($Mode -eq 'Inspect' -or -not [string]::IsNullOrWhiteSpace($Inspect)) {
+    $targetFile = if ($Inspect) { $Inspect } else { $Search }
+    if (-not $targetFile) {
+        Write-ErrMsg "Please specify a book file to inspect, e.g. .\KindleManager.ps1 -Inspect 'books\mybook.epub'"
+        return
+    }
+    Get-EpubMetadata -Path $targetFile
+    return
+}
 if (-not $DryRun -and -not $Help -and $Mode -ne 'Test') { Invoke-SelfRepair }
 if ($Mode -eq 'Test') {
     if (-not (Invoke-KindleTests)) { exit 1 }
@@ -4370,7 +4552,7 @@ if ($Mode -eq 'Test') {
 }
 $downloadArguments = @{}
 foreach ($key in $PSBoundParameters.Keys) {
-    if ($key -ne 'Mode') { $downloadArguments[$key] = $PSBoundParameters[$key] }
+    if ($key -ne 'Mode' -and $key -ne 'Inspect') { $downloadArguments[$key] = $PSBoundParameters[$key] }
 }
 if ($Mode -eq 'Transfer') {
     Invoke-KindleTransfer
