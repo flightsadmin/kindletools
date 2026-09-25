@@ -44,16 +44,16 @@ The interactive flow asks for a source, format, maximum number of books, and whe
 
 | Source | Description |
 | --- | --- |
-| Standard Ebooks | Downloads EPUB or Kindle AZW3 files from the catalogue. Offers subject filters; this source does not provide PDF downloads. |
-| AliceAndBooks | Downloads available files from its catalogue in the selected format. Offers genre and category filters; availability depends on the book. |
-| Global Grey | Downloads categorized books in PDF, EPUB, or Kindle AZW3 format. Offers fiction subgenres and other catalogue subjects. |
+| Standard Ebooks | Downloads EPUB or Kindle AZW3 files from the catalogue. Supports title and author search; this source does not provide PDF downloads. |
+| AliceAndBooks | Downloads available files from its catalogue in the selected format. Availability depends on the book. |
+| Global Grey | Downloads fiction books in PDF, EPUB, or Kindle AZW3 format. |
 | Project Gutenberg | Downloads English books as EPUB or Kindle MOBI using its official machine-readable catalogue. Offers subject and bookshelf filters. |
 | Direct authorized URL | Downloads a book from an HTTP or HTTPS file URL you provide. |
 | JSON manifest | Downloads a list of book URLs from a local JSON file. |
 
 The default format is **MOBI / Kindle**. Standard Ebooks and Global Grey provide Kindle AZW3 files; Gutenberg provides Kindle format. Standard Ebooks and Gutenberg also offer EPUB, while Global Grey and AliceAndBooks may offer PDF. The script downloads available files; it does not convert books between formats. Use material you are authorized to download.
 
-The interactive downloader lists numbered categories for the selected source. Enter one number or several comma-separated numbers, such as `1,3`; the results include books matching any selected category. For now, the choices are Fiction, Romance, and Sci-Fi where each source provides them. Standard Ebooks exposes Fiction and Science Fiction in its public catalogue; it has no Romance category. AliceAndBooks and Global Grey use their category pages; Gutenberg uses subject and bookshelf metadata. Global Grey has no separate Romance shelf, and labels its Sci-Fi shelf “Fantasy & Sci-Fi.” Global Grey and Gutenberg also offer a title filter, and Gutenberg matches author names. Gutenberg loads its complete CSV catalogue into memory; it does not save a catalogue folder or history file. These integrations use the [Standard Ebooks public catalogue](https://standardebooks.org/ebooks), [AliceAndBooks categories](https://www.aliceandbooks.com/categories), [Global Grey categories](https://www.globalgreyebooks.com/ebook-categories.html), and [Gutenberg's machine-readable metadata](https://www.gutenberg.org/policy/robot_access.html).
+The interactive downloader proceeds directly from source selection to download settings. Global Grey and Gutenberg use their fiction catalogues and offer a title filter; Gutenberg also matches author names. Gutenberg loads its complete CSV catalogue into memory without saving a catalogue folder or history file.
 
 By default, downloads are limited to three books, with a one-second delay between books and one attempt per book. Enter `0` for an unlimited count. Unlimited and long runs have a ten-minute safety limit by default; set `-MaxRuntimeMinutes 0` to remove it, or choose another value. When the limit is reached, the current request is allowed to finish and no new book is started. A dry run checks paths and source availability without saving books or creating folders; catalogue and manifest checks inspect a limited sample.
 
@@ -64,6 +64,20 @@ Successful downloads are also recorded per source as JSON under `downloads` (`st
 Gutenberg uses at least two seconds between book downloads. Global Grey uses at least one second between catalogue/book-page requests and downloads. A higher `-Delay` is respected.
 
 Downloads are validated before being moved into place. HTML/XML responses are rejected, and PDF/EPUB headers are checked. Normal repeat runs skip recorded or existing files; a successful new download is added to the source record immediately.
+
+### Search for books
+
+Choose **Download books → 7. Search all libraries**, enter a title or author, choose a format and download limit, then confirm the settings. Select result numbers separated by commas; press ENTER to cancel. Results show their source so you can choose an edition. Downloads use the existing validation, duplicate checks, history, and optional Kindle transfer.
+
+```powershell
+# Search every library and download the first matching book
+.\KindleManager.ps1 -Search 'Pride and Prejudice' -Format epub -Limit 1
+
+# Review and select results interactively
+.\KindleManager.ps1 -Source all -Search 'Jane Austen' -Interactive
+```
+
+Standard Ebooks, AliceAndBooks, and Gutenberg support title/author searches; Global Grey searches titles from its sitemap. Searching Gutenberg includes English nonfiction as well as fiction. PDF searches skip Standard Ebooks and Gutenberg. An unavailable library produces a warning while other searches continue. Interactive results retain alternative editions; automatic downloads prefer the first matching edition of each title. Search results are bounded by the candidate and runtime limits; `-Limit 0` removes the candidate cap.
 
 ## Manage Kindle
 
@@ -158,9 +172,8 @@ Automatic copying during downloads (`-Kindle`) uses a filesystem path or a detec
 | Option | Purpose / default |
 | --- | --- |
 | `-Mode` | `Menu`, `Download`, `Transfer`, or `Test`; default `Menu` |
-| `-Source` | `standard`, `alice`, `globalgrey`, `gutenberg`, `url`, or `manifest` |
-| `-Search` | Optional title substring for Global Grey; title or author substring for Gutenberg. Case-insensitive; used only by these two sources. |
-| `-Category` | Category filter; repeat it to select multiple values. The interactive downloader lists numbered source-specific categories. |
+| `-Source` | `all`, `standard`, `alice`, `globalgrey`, `gutenberg`, `url`, or `manifest` |
+| `-Search` | Search titles or authors across all libraries by default, or restrict to `-Source`. Global Grey matches titles only. |
 | `-Url` | Direct HTTP/HTTPS book URL; selects the URL source |
 | `-Manifest` | JSON file path; selects the manifest source |
 | `-Output` | Download destination; default `books` beside the script |
