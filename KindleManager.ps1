@@ -1270,6 +1270,83 @@ function Get-AllDownloadRecords {
     return $results.ToArray()
 }
 
+function Normalize-BookTitle {
+    param([string]$Title)
+    if ([string]::IsNullOrWhiteSpace($Title)) { return '' }
+    $t = $Title -replace '\.(epub|pdf|mobi|azw3|azw|txt)$', ''
+    $t = $t -replace '&', ' and '
+    $t = $t -replace '[^a-zA-Z0-9]', ' '
+    return ($t -replace '\s+', ' ').Trim().ToLowerInvariant()
+}
+
+function Get-AllDownloadRecordsLookup {
+    $allRecords = Get-AllDownloadRecords
+    $filenames = @{}
+    $urls = @{}
+    $titles = @{}
+
+    foreach ($item in $allRecords) {
+        $rec = $item.Record
+        if ($rec.filename) {
+            $filenames[$rec.filename.ToLowerInvariant()] = $true
+        }
+        if ($rec.url) {
+            $urls[$rec.url.ToLowerInvariant()] = $true
+        }
+        if ($rec.title) {
+            $norm = Normalize-BookTitle $rec.title
+            if ($norm) { $titles[$norm] = $true }
+        }
+    }
+    return [pscustomobject]@{
+        Filenames = $filenames
+        Urls      = $urls
+        Titles    = $titles
+        Raw       = $allRecords
+    }
+}
+
+function Test-BookAlreadyDownloaded {
+    param(
+        [string]$Title,
+        [string]$Url,
+        [string]$Filename,
+        $RecordsLookup,
+        [hashtable]$ExistingDiskFiles
+    )
+
+    if ($Filename -and $ExistingDiskFiles -and $ExistingDiskFiles.ContainsKey($Filename.ToLowerInvariant())) {
+        return $true
+    }
+
+    if ($RecordsLookup) {
+        if ($Filename -and $RecordsLookup.Filenames -and $RecordsLookup.Filenames.ContainsKey($Filename.ToLowerInvariant())) {
+            return $true
+        }
+        if ($Url -and $RecordsLookup.Urls -and $RecordsLookup.Urls.ContainsKey($Url.ToLowerInvariant())) {
+            return $true
+        }
+        if ($Title) {
+            $normTitle = Normalize-BookTitle $Title
+            if ($normTitle -and $RecordsLookup.Titles -and $RecordsLookup.Titles.ContainsKey($normTitle)) {
+                return $true
+            }
+        }
+    }
+
+    if ($Title -and $ExistingDiskFiles) {
+        $normTitle = Normalize-BookTitle $Title
+        foreach ($diskFile in $ExistingDiskFiles.Keys) {
+            $normDisk = Normalize-BookTitle $diskFile
+            if ($normTitle -and $normDisk -and $normTitle -eq $normDisk) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
 function Set-DownloadRecordTransferred {
     param([Parameter(Mandatory)][string]$Filename)
     $lowerFilename = $Filename.ToLowerInvariant()
@@ -1926,10 +2003,10 @@ function Invoke-DownloadWorkflow {
     Write-Step "Building download list from $($options.Source)..."
     if (Test-DownloadTimeLimit -Options $options) { return }
     $existingNames = Get-ExistingBookNames -Output $options.Output
-    $downloadRecords = Read-DownloadRecords -Source $options.Source
-    foreach ($recordName in $downloadRecords.Keys) {
-        if (Test-Path -LiteralPath (Join-Path $options.Output $recordName) -PathType Leaf) {
-            $existingNames[$recordName] = $true
+    $recordsLookup = Get-AllDownloadRecordsLookup
+    foreach ($recFilename in $recordsLookup.Filenames.Keys) {
+        if (Test-Path -LiteralPath (Join-Path $options.Output $recFilename) -PathType Leaf) {
+            $existingNames[$recFilename] = $true
         }
     }
     $options | Add-Member -NotePropertyName ExistingNames -NotePropertyValue $existingNames -Force
@@ -1941,7 +2018,7 @@ function Invoke-DownloadWorkflow {
     foreach ($candidate in $downloads) {
         $candidateFormat = Normalize-Format $(if ($candidate.Format) { $candidate.Format } else { $options.Format })
         $candidateName = Get-DownloadFileName -Book $candidate -Format $candidateFormat
-        if ($existingNames.ContainsKey($candidateName.ToLowerInvariant())) {
+        if (Test-BookAlreadyDownloaded -Title $candidate.Title -Url $candidate.Url -Filename $candidateName -RecordsLookup $recordsLookup -ExistingDiskFiles $existingNames) {
             $skippedExisting++
             continue
         }

@@ -152,6 +152,30 @@ try {
         }
     }
 
+    # Test cross-source duplicate detection
+    & {
+        $previousRecordsDirectory = $script:DOWNLOAD_RECORDS_DIR
+        $testRecordsDirectory = Join-Path ([IO.Path]::GetTempPath()) ('kindle-cross-records-' + [guid]::NewGuid())
+        $script:DOWNLOAD_RECORDS_DIR = $testRecordsDirectory
+        try {
+            $book1 = [pscustomobject]@{ Title = 'Pride and Prejudice'; Url = 'https://gutenberg.org/ebooks/1342.epub' }
+            Save-DownloadRecord -Source gutenberg -Book $book1 -Filename 'Pride and Prejudice.epub' -Format epub -Size 500000
+
+            $lookup = Get-AllDownloadRecordsLookup
+
+            $candidate1 = [pscustomobject]@{ Title = 'Pride & Prejudice'; Url = 'https://standardebooks.org/downloads/pride-and-prejudice.epub' }
+            $isDup1 = Test-BookAlreadyDownloaded -Title $candidate1.Title -Url $candidate1.Url -Filename 'Pride & Prejudice.epub' -RecordsLookup $lookup -ExistingDiskFiles @{}
+            if (-not $isDup1) { throw 'Cross-source duplicate detection failed for normalized title.' }
+
+            $candidate2 = [pscustomobject]@{ Title = 'Dracula'; Url = 'https://gutenberg.org/ebooks/345.epub' }
+            $isDup2 = Test-BookAlreadyDownloaded -Title $candidate2.Title -Url $candidate2.Url -Filename 'Dracula.epub' -RecordsLookup $lookup -ExistingDiskFiles @{}
+            if ($isDup2) { throw 'Cross-source duplicate detection returned false match for new book.' }
+        } finally {
+            $script:DOWNLOAD_RECORDS_DIR = $previousRecordsDirectory
+            if (Test-Path -LiteralPath $testRecordsDirectory) { Remove-Item -LiteralPath $testRecordsDirectory -Recurse -Force }
+        }
+    }
+
     & {
         $outputFolder = Join-Path ([IO.Path]::GetTempPath()) ('kindle-search-flow-' + [guid]::NewGuid())
         $savedSources = [Collections.Generic.List[string]]::new()
