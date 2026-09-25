@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 <#
 .SYNOPSIS
 Download books and manage a Kindle from one self-contained script.
@@ -94,6 +94,88 @@ function Complete-StagedFile([string]$StagedPath, [string]$Destination) {
         [IO.File]::Replace($StagedPath, $Destination, [NullString]::Value)
     } else {
         [IO.File]::Move($StagedPath, $Destination)
+    }
+}
+
+function Repair-EpubUncopyrightMetadata {
+    param(
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or [IO.Path]::GetExtension($Path).ToLowerInvariant() -ne '.epub') {
+        return $false
+    }
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+
+        $zip = [System.IO.Compression.ZipFile]::Open($Path, [System.IO.Compression.ZipArchiveMode]::Update)
+        if ($null -eq $zip) { return $false }
+
+        $opfEntry = $zip.Entries | Where-Object { $_.FullName -like '*.opf' } | Select-Object -First 1
+        if (-not $opfEntry) {
+            $zip.Dispose()
+            return $false
+        }
+
+        $stream = $opfEntry.Open()
+        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+        $content = $reader.ReadToEnd()
+        $reader.Dispose()
+        $stream.Dispose()
+
+        if ($content -match '(?is)<dc:(publisher|rights)[^>]*>[^<]*uncopyright[^<]*</dc:\1>') {
+            $entryName = $opfEntry.FullName
+            $newContent = [regex]::Replace($content, '(?is)<dc:(publisher|rights)[^>]*>[^<]*uncopyright[^<]*</dc:\1>', '')
+
+            $opfEntry.Delete()
+            $newEntry = $zip.CreateEntry($entryName)
+            $newStream = $newEntry.Open()
+            $writer = New-Object System.IO.StreamWriter($newStream, [System.Text.Encoding]::UTF8)
+            $writer.Write($newContent)
+            $writer.Flush()
+            $writer.Dispose()
+            $newStream.Dispose()
+
+            $zip.Dispose()
+            return $true
+        }
+
+        $zip.Dispose()
+        return $false
+    } catch {
+        if ($null -ne $zip) { $zip.Dispose() }
+        return $false
+    }
+}
+
+function Invoke-EpubMetadataCleanup {
+    param([string]$TargetFolder = $script:BOOKS_DIR)
+    Write-Step "Cleaning 'Uncopyright' metadata tags from EPUB files..."
+    if (-not (Test-Path -LiteralPath $TargetFolder -PathType Container)) {
+        Write-WarnMsg "Folder does not exist: $TargetFolder"
+        return
+    }
+
+    $epubFiles = @(Get-ChildItem -LiteralPath $TargetFolder -Filter '*.epub' -File -Recurse -ErrorAction SilentlyContinue)
+    if ($epubFiles.Count -eq 0) {
+        Write-Host "No EPUB files found in $TargetFolder." -ForegroundColor Gray
+        return
+    }
+
+    $cleanedCount = 0
+    foreach ($file in $epubFiles) {
+        if (Repair-EpubUncopyrightMetadata -Path $file.FullName) {
+            Write-Success "Cleaned metadata: $($file.Name)"
+            $cleanedCount++
+        }
+    }
+
+    if ($cleanedCount -gt 0) {
+        Write-Success "Cleaned metadata in $cleanedCount EPUB file(s)."
+    } else {
+        Write-Host "All EPUB files already have clean metadata." -ForegroundColor Gray
     }
 }
 
@@ -1118,6 +1200,11 @@ function Download-BookFile {
             Assert-BookFile -Path $tempFile -Format ([IO.Path]::GetExtension($Destination).TrimStart('.'))
 
             Complete-StagedFile -StagedPath $tempFile -Destination $Destination
+            if ([IO.Path]::GetExtension($Destination).ToLowerInvariant() -eq '.epub') {
+                if (Repair-EpubUncopyrightMetadata -Path $Destination) {
+                    Write-Success "Cleaned 'Uncopyright' metadata tag from $([IO.Path]::GetFileName($Destination))."
+                }
+            }
             return
         } catch {
             $lastError = $_
@@ -4219,6 +4306,7 @@ function Invoke-KindleTransfer {
             Show-KindleInfo
             if (Test-KindleConnection) { Show-KindleStorage }
         } }
+        @{ Label = 'Clean EPUB metadata (remove Uncopyright tags)'; Action = { Invoke-EpubMetadataCleanup } }
         @{ Label = 'Open PC books folder'; Action = { Open-PCBooksFolder } }
     )
     while ($true) {

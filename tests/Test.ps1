@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 # Offline regression checks. No Kindle, network, or external test framework required.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -46,7 +46,7 @@ try {
         function Clear-Host { }
         $opened = [Collections.Generic.List[string]]::new()
         function Start-Process { param($FilePath, $ArgumentList) $opened.Add($ArgumentList) }
-        @('6', '', '7') | ForEach-Object { $answers.Enqueue($_) }
+        @('7', '', '8') | ForEach-Object { $answers.Enqueue($_) }
         Invoke-KindleTransfer
         Assert ($answers.Count -eq 0) 'Manage menu did not return.'
         Assert ($opened.Count -eq 1 -and $opened[0] -like "*$root*books*") 'Menu action or books path changed.'
@@ -175,6 +175,36 @@ try {
             if ($savedSources.Count -ne 1) { throw 'Search workflow downloaded an existing book again.' }
         } finally {
             if (Test-Path -LiteralPath $outputFolder) { Remove-Item -LiteralPath $outputFolder -Recurse -Force }
+        }
+    }
+
+    # Test EPUB metadata cleaning (removing Uncopyright publisher tags).
+    & {
+        $tempEpub = Join-Path ([IO.Path]::GetTempPath()) ("kindle-epub-clean-" + [guid]::NewGuid() + ".epub")
+        try {
+            Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+            Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+            $zip = [System.IO.Compression.ZipFile]::Open($tempEpub, [System.IO.Compression.ZipArchiveMode]::Create)
+            $entry = $zip.CreateEntry("content.opf")
+            $stream = $entry.Open()
+            $writer = New-Object System.IO.StreamWriter($stream, [System.Text.Encoding]::UTF8)
+            $writer.Write("<package><metadata><dc:title>Test Book</dc:title><dc:publisher>Uncopyright Joseph Conrad</dc:publisher></metadata></package>")
+            $writer.Flush(); $writer.Dispose(); $stream.Dispose(); $zip.Dispose()
+
+            $cleaned = Repair-EpubUncopyrightMetadata -Path $tempEpub
+            if (-not $cleaned) { throw 'Repair-EpubUncopyrightMetadata returned false for file with Uncopyright tag.' }
+
+            $zip2 = [System.IO.Compression.ZipFile]::OpenRead($tempEpub)
+            $entry2 = $zip2.Entries | Where-Object { $_.FullName -like '*.opf' } | Select-Object -First 1
+            $reader2 = New-Object System.IO.StreamReader($entry2.Open(), [System.Text.Encoding]::UTF8)
+            $content2 = $reader2.ReadToEnd()
+            $reader2.Dispose(); $zip2.Dispose()
+            if ($content2 -match 'Uncopyright') { throw 'Uncopyright tag was not removed from metadata.' }
+
+            $cleanedAgain = Repair-EpubUncopyrightMetadata -Path $tempEpub
+            if ($cleanedAgain) { throw 'Repair-EpubUncopyrightMetadata returned true when no Uncopyright tag remained.' }
+        } finally {
+            if (Test-Path -LiteralPath $tempEpub) { Remove-Item -LiteralPath $tempEpub -Force }
         }
     }
 
