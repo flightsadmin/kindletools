@@ -1,10 +1,11 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 $ErrorActionPreference = 'Stop'
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'KindleManager.ps1')
 function Start-Sleep { param($Milliseconds, $Seconds) }
 function Invoke-BookWebRequest {
     param($Uri, $TimeoutMs, $Accept)
     $content = switch -Regex ($Uri) {
+        'sitemap\.xml$' { '<urlset><url><loc>https://www.globalgreyebooks.com/pride-and-prejudice-ebook.html</loc></url></urlset>' }
         'pg_catalog\.csv$' {
             'Text#,Type,Title,Language,Authors,Subjects,Bookshelves' + "`n" +
             '1,Text,Nonfiction,en,Author,History,History' + "`n" +
@@ -45,3 +46,46 @@ if ($books.Count -ne 1 -or $books[0].Extension -ne 'azw3') { throw 'Global Grey 
 $options.Search = 'No matching title'
 if (@(Build-DownloadList $options).Count -ne 0) { throw 'Title filter was ignored.' }
 Write-Host 'All source checks passed.' -ForegroundColor Green
+
+& {
+    $script:STANDARD_URL = 'https://standardebooks.org'
+    $script:STANDARD_EBOOKS_URL = "$script:STANDARD_URL/ebooks"
+    $script:ALICE_URL = 'https://www.aliceandbooks.com'
+    $requested = [Collections.Generic.List[string]]::new()
+    function Invoke-BookWebRequest {
+        param($Uri, $TimeoutMs, $Accept)
+        $requested.Add($Uri)
+        $content = switch -Regex ($Uri) {
+            'standardebooks.org' {
+                if ($Uri -notmatch 'query=Pride%20and%20Prejudice') { throw 'Search query was not encoded.' }
+                '<li typeof="schema:Book" about="/ebooks/jane-austen/pride-and-prejudice"><span property="schema:name">Pride and Prejudice</span></li>'
+            }
+            '/sitemap$' {
+                '<a href="/book/unrelated/author/1">Unrelated recommendation</a><a href="/book/pride-and-prejudice/jane-austen/2"><img src="cover.jpg"></a><a href="/book/pride-and-prejudice/jane-austen/2">Pride and Prejudice</a>'
+            }
+            '/book/pride-and-prejudice/' { '<a href="https://www.aliceandbooks.com/download/book.epub">EPUB</a>' }
+            'globalgrey' { throw 'Simulated unavailable library' }
+            'pg_catalog' { 'Text#,Type,Title,Language,Authors,Subjects,Bookshelves' + "`n" + '1342,Text,Pride and Prejudice,en,Jane Austen,Fiction,Classics' }
+            default { throw "Unexpected request: $Uri" }
+        }
+        [pscustomobject]@{ Content = $content; StatusCode = 200 }
+    }
+    $options = [pscustomobject]@{ Source='all'; Search='Pride and Prejudice'; Format='epub'; Limit=1; CandidateLimit=1; Delay=0; Timeout=1000; Deadline=$null }
+    $books = @(Build-DownloadList $options)
+    if ($books.Count -ne 3) { throw 'Search must continue across libraries after a failure.' }
+    if (($books.Source -join ',') -ne 'standard,alice,gutenberg') { throw 'Search lost source provenance.' }
+    if ($books.Title -contains 'Unrelated recommendation') { throw 'Search included an unrelated recommendation.' }
+    $requested.Clear()
+    $options.Format = 'pdf'
+    $null = @(Build-DownloadList $options)
+    if (@($requested | Where-Object { $_ -match 'standardebooks|pg_catalog' }).Count) { throw 'PDF search queried unsupported libraries.' }
+
+    $answers = [Collections.Generic.Queue[string]]::new()
+    @('99', '1,2', '2,2') | ForEach-Object { $answers.Enqueue($_) }
+    function Read-DownloadInput { param($Prompt) if (-not $answers.Count) { throw 'Unexpected prompt' }; $answers.Dequeue() }
+    $selected = @(Select-SearchBooks -Books $books -Limit 1)
+    if ($selected.Count -ne 1 -or $selected[0].Source -ne 'alice' -or $answers.Count) { throw 'Result selection validation failed.' }
+    $answers.Enqueue('')
+    if (@(Select-SearchBooks -Books $books -Limit 0).Count) { throw 'Search cancellation selected books.' }
+}
+Write-Host 'All cross-library search checks passed.' -ForegroundColor Green

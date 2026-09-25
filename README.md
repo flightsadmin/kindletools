@@ -44,7 +44,7 @@ The interactive flow asks for a source, format, maximum number of books, and whe
 
 | Source | Description |
 | --- | --- |
-| Standard Ebooks | Downloads EPUB or Kindle AZW3 files from the catalogue. Offers subject filters; this source does not provide PDF downloads. |
+| Standard Ebooks | Downloads EPUB or Kindle AZW3 files from the catalogue. Supports title and author search; this source does not provide PDF downloads. |
 | AliceAndBooks | Downloads available files from its catalogue in the selected format. Availability depends on the book. |
 | Global Grey | Downloads fiction books in PDF, EPUB, or Kindle AZW3 format. |
 | Project Gutenberg | Downloads English books as EPUB or Kindle MOBI using its official machine-readable catalogue. Offers subject and bookshelf filters. |
@@ -64,6 +64,20 @@ Successful downloads are also recorded per source as JSON under `downloads` (`st
 Gutenberg uses at least two seconds between book downloads. Global Grey uses at least one second between catalogue/book-page requests and downloads. A higher `-Delay` is respected.
 
 Downloads are validated before being moved into place. HTML/XML responses are rejected, and PDF/EPUB headers are checked. Normal repeat runs skip recorded or existing files; a successful new download is added to the source record immediately.
+
+### Search for books
+
+Choose **Download books → 7. Search all libraries**, enter a title or author, choose a format and download limit, then confirm the settings. Select result numbers separated by commas; press ENTER to cancel. Results show their source so you can choose an edition. Downloads use the existing validation, duplicate checks, history, and optional Kindle transfer.
+
+```powershell
+# Search every library and download the first matching book
+.\KindleManager.ps1 -Search 'Pride and Prejudice' -Format epub -Limit 1
+
+# Review and select results interactively
+.\KindleManager.ps1 -Source all -Search 'Jane Austen' -Interactive
+```
+
+Standard Ebooks, AliceAndBooks, and Gutenberg support title/author searches; Global Grey searches titles from its sitemap. Searching Gutenberg includes English nonfiction as well as fiction. PDF searches skip Standard Ebooks and Gutenberg. An unavailable library produces a warning while other searches continue. Interactive results retain alternative editions; automatic downloads prefer the first matching edition of each title. Search results are bounded by the candidate and runtime limits; `-Limit 0` removes the candidate cap.
 
 ## Manage Kindle
 
@@ -158,8 +172,8 @@ Automatic copying during downloads (`-Kindle`) uses a filesystem path or a detec
 | Option | Purpose / default |
 | --- | --- |
 | `-Mode` | `Menu`, `Download`, `Transfer`, or `Test`; default `Menu` |
-| `-Source` | `standard`, `alice`, `globalgrey`, `gutenberg`, `url`, or `manifest` |
-| `-Search` | Optional title substring for Global Grey; title or author substring for Gutenberg. Case-insensitive; used only by these two sources. |
+| `-Source` | `all`, `standard`, `alice`, `globalgrey`, `gutenberg`, `url`, or `manifest` |
+| `-Search` | Search titles or authors across all libraries by default, or restrict to `-Source`. Global Grey matches titles only. |
 | `-Url` | Direct HTTP/HTTPS book URL; selects the URL source |
 | `-Manifest` | JSON file path; selects the manifest source |
 | `-Output` | Download destination; default `books` beside the script |
