@@ -28,14 +28,19 @@ param(
     [ValidateSet('pdf', 'epub', 'mobi', 'kindle')]
     [string]$Format = 'mobi',
 
-    [int]$Delay = 2000,
+    [ValidateRange(0, 2147483647)]
+    [int]$Delay = 1000,
 
+    [ValidateRange(0, 2147483647)]
     [int]$Limit = 3,   # 0 = unlimited
 
+    [ValidateRange(1, 2147483647)]
     [int]$Retries = 1,
 
+    [ValidateRange(1, 2147483647)]
     [int]$Timeout = 30000,
 
+    [ValidateRange(0, 2147483647)]
     [int]$MaxRuntimeMinutes = 10,
 
     [switch]$DryRun,
@@ -80,8 +85,15 @@ function Write-ErrMsg([string]$Message) {
 }
 
 function Ensure-Directory([string]$Directory) {
-    if (-not (Test-Path -LiteralPath $Directory)) {
-        New-Item -ItemType Directory -Path $Directory -Force | Out-Null
+    [IO.Directory]::CreateDirectory($Directory) | Out-Null
+}
+
+# Stage files beside their destination so replacement stays on the same volume.
+function Complete-StagedFile([string]$StagedPath, [string]$Destination) {
+    if ([IO.File]::Exists($Destination)) {
+        [IO.File]::Replace($StagedPath, $Destination, [NullString]::Value)
+    } else {
+        [IO.File]::Move($StagedPath, $Destination)
     }
 }
 
@@ -104,7 +116,7 @@ function Invoke-SelfRepair {
     try {
         $cutoff = (Get-Date).AddHours(-1)
         foreach ($partial in @(Get-ChildItem -LiteralPath $OutputFolder -Filter '*.download' -File -ErrorAction SilentlyContinue)) {
-            if ($partial.LastWriteTime -lt $cutoff) {
+            if ($partial.Name -match '\.[0-9a-f]{32}\.download$' -and $partial.LastWriteTime -lt $cutoff) {
                 Remove-Item -LiteralPath $partial.FullName -Force
                 $fixed++
                 Write-WarnMsg "Removed abandoned partial download: $($partial.Name)"
@@ -251,6 +263,7 @@ function Get-SafeFilename([string]$Value, [string]$Fallback = 'book') {
     }
     $name = ($name -replace '\s+', ' ').Trim().TrimEnd('.', ' ')
     if ([string]::IsNullOrWhiteSpace($name)) { $name = $Fallback }
+    if ($name -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)') { $name = "_$name" }
     return $name
 }
 
@@ -382,7 +395,8 @@ function Invoke-BookWebRequest {
         Uri             = $Uri
         Method          = $Method
         Headers         = $headers
-        TimeoutSec      = [Math]::Max(1, [int]($TimeoutMs / 1000))
+        TimeoutSec      = [Math]::Max(1, [int][Math]::Ceiling($TimeoutMs / 1000.0))
+        ErrorAction     = 'Stop'
         UseBasicParsing = $true
         MaximumRedirection = 5
     }
@@ -940,7 +954,14 @@ function Save-DownloadRecord {
     $records = @($recordTable.Values)
     $records = @($records | Where-Object { $_.filename -ine $Filename })
     $records += [pscustomobject]@{ title = [string]$Book.Title; url = [string]$Book.Url; filename = $Filename; format = $Format; size = $Size; downloadedAt = (Get-Date).ToUniversalTime().ToString('o') }
-    [pscustomobject]@{ source = $Source; records = @($records | Sort-Object filename) } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path -Encoding UTF8
+    $stagedPath = "$path.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        $json = [pscustomobject]@{ source = $Source; records = @($records | Sort-Object filename) } | ConvertTo-Json -Depth 5
+        [IO.File]::WriteAllText($stagedPath, $json, [Text.UTF8Encoding]::new($false))
+        Complete-StagedFile -StagedPath $stagedPath -Destination $path
+    } finally {
+        if ([IO.File]::Exists($stagedPath)) { [IO.File]::Delete($stagedPath) }
+    }
 }
 #endregion
 
@@ -968,7 +989,7 @@ function Download-BookFile {
 
     $lastError = $null
     for ($attempt = 1; $attempt -le $Options.Retries; $attempt++) {
-        $tempFile = "$Destination.download"
+        $tempFile = "$Destination.$([guid]::NewGuid().ToString('N')).download"
         try {
             if (Test-Path -LiteralPath $tempFile) {
                 Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
@@ -993,10 +1014,7 @@ function Download-BookFile {
 
             Assert-BookFile -Path $tempFile -Format ([IO.Path]::GetExtension($Destination).TrimStart('.'))
 
-            if (Test-Path -LiteralPath $Destination) {
-                Remove-Item -LiteralPath $Destination -Force
-            }
-            Move-Item -LiteralPath $tempFile -Destination $Destination -Force
+            Complete-StagedFile -StagedPath $tempFile -Destination $Destination
             return
         } catch {
             $lastError = $_
@@ -1609,7 +1627,11 @@ function Invoke-DownloadWorkflow {
             $item = Get-Item -LiteralPath $destination
             $mb = [Math]::Round($item.Length / 1MB, 2)
             Write-Success "Downloaded $mb MB"
-            Save-DownloadRecord -Source $options.Source -Book $book -Filename $finalFilename -Format $format -Size $item.Length
+            try {
+                Save-DownloadRecord -Source $options.Source -Book $book -Filename $finalFilename -Format $format -Size $item.Length
+            } catch {
+                Write-WarnMsg "Book saved, but its download record could not be updated: $($_.Exception.Message)"
+            }
 
             $kindleDest = $null
             if (($kindlePath -or $kindleMtpDocuments) -and (Test-KindleDirectFormat $destination)) {
@@ -3970,13 +3992,20 @@ function Invoke-BookDownloader {
         [ValidateSet('epub', 'pdf', 'mobi', 'kindle')]
         [string]$Format = 'mobi',
 
+        [ValidateRange(0, 2147483647)]
         [int]$Delay = 1000,
 
+        [ValidateRange(0, 2147483647)]
         [int]$Limit = 3,   # 0 = unlimited
 
+        [ValidateRange(1, 2147483647)]
         [int]$Retries = 1,
 
+        [ValidateRange(1, 2147483647)]
         [int]$Timeout = 30000,
+
+        [ValidateRange(0, 2147483647)]
+        [int]$MaxRuntimeMinutes = 10,
 
         [switch]$DryRun,
 
@@ -4112,7 +4141,7 @@ function Invoke-KindleTests {
 #region Main menu and command-line routing
 # Dot-sourcing loads the functions without opening the interactive menu.
 if ($MyInvocation.InvocationName -eq '.') { return }
-if (-not $DryRun) { Invoke-SelfRepair }
+if (-not $DryRun -and -not $Help -and $Mode -ne 'Test') { Invoke-SelfRepair }
 if ($Mode -eq 'Test') {
     if (-not (Invoke-KindleTests)) { exit 1 }
     return

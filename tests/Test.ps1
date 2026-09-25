@@ -97,6 +97,10 @@ try {
             Download-BookFile -Uri 'https://example.invalid/book.pdf' -Destination $destination -Options $options
             $original = [IO.File]::ReadAllText($destination)
             if ($original -ne $response) { throw 'Download file was not saved.' }
+            $response = '%PDF-1.7 replacement fixture'
+            Download-BookFile -Uri 'https://example.invalid/book.pdf' -Destination $destination -Options $options
+            $original = [IO.File]::ReadAllText($destination)
+            if ($original -ne $response) { throw 'Existing download was not replaced.' }
             $response = '<html>Not a book</html>'
             $rejected = $false
             try { Download-BookFile -Uri 'https://example.invalid/book.pdf' -Destination $destination -Options $options }
@@ -104,10 +108,47 @@ try {
             if (-not $rejected) { throw 'Invalid book response was accepted.' }
             if ([IO.File]::ReadAllText($destination) -ne $original) { throw 'Failed download changed the original file.' }
             if (Test-Path -LiteralPath "$destination.download") { throw 'Temporary download was not cleaned up.' }
+            if (@(Get-ChildItem -LiteralPath (Split-Path $destination) -Filter "$([IO.Path]::GetFileName($destination)).*.download").Count) {
+                throw 'Unique temporary download was not cleaned up.'
+            }
         } finally {
             foreach ($file in @($destination, "$destination.download")) {
                 if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
             }
+        }
+    }
+
+    & {
+        if ((Get-SafeFilename 'CON.pdf') -ne '_CON.pdf') { throw 'Reserved Windows filename was accepted.' }
+        if ((Get-SafeFilename 'A: Book?') -ne 'A Book') { throw 'Filename cleanup regressed.' }
+        foreach ($settings in @(@{ Limit = -1 }, @{ Delay = -1 }, @{ Retries = 0 }, @{ Timeout = 0 }, @{ MaxRuntimeMinutes = -1 })) {
+            $rejected = $false
+            try { Invoke-BookDownloader @settings -Help } catch { $rejected = $true }
+            if (-not $rejected) { throw 'Invalid numeric settings were accepted.' }
+        }
+        Invoke-BookDownloader -MaxRuntimeMinutes 0 -Help
+    }
+
+    & {
+        $previousRecordsDirectory = $script:DOWNLOAD_RECORDS_DIR
+        $testRecordsDirectory = Join-Path ([IO.Path]::GetTempPath()) ('kindle-records-' + [guid]::NewGuid())
+        $script:DOWNLOAD_RECORDS_DIR = $testRecordsDirectory
+        try {
+            $book = [pscustomobject]@{ Title = 'Fixture'; Url = 'https://example.invalid/book.pdf' }
+            Save-DownloadRecord -Source test -Book $book -Filename 'fixture.pdf' -Format pdf -Size 20
+            Save-DownloadRecord -Source test -Book $book -Filename 'fixture.pdf' -Format pdf -Size 30
+            $records = Read-DownloadRecords -Source test
+            if ($records.Count -ne 1 -or $records['fixture.pdf'].size -ne 30) { throw 'Record replacement failed.' }
+            $original = [IO.File]::ReadAllText((Get-DownloadRecordPath test))
+            function Complete-StagedFile { param($StagedPath, $Destination) throw 'Simulated replacement failure' }
+            $rejected = $false
+            try { Save-DownloadRecord -Source test -Book $book -Filename 'fixture.pdf' -Format pdf -Size 40 } catch { $rejected = $true }
+            if (-not $rejected) { throw 'Record save did not report the replacement failure.' }
+            if ([IO.File]::ReadAllText((Get-DownloadRecordPath test)) -ne $original) { throw 'Failed save damaged the record.' }
+            if (@(Get-ChildItem -LiteralPath $testRecordsDirectory -Filter '*.tmp').Count) { throw 'Staged record was not cleaned up.' }
+        } finally {
+            $script:DOWNLOAD_RECORDS_DIR = $previousRecordsDirectory
+            if (Test-Path -LiteralPath $testRecordsDirectory) { Remove-Item -LiteralPath $testRecordsDirectory -Recurse -Force }
         }
     }
 
