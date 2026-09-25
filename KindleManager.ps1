@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 <#
 .SYNOPSIS
 Download books and manage a Kindle from one self-contained script.
@@ -41,7 +41,7 @@ param(
     [int]$Timeout = 30000,
 
     [ValidateRange(0, 2147483647)]
-    [int]$MaxRuntimeMinutes = 10,
+    [int]$MaxRuntimeMinutes = 20,
 
     [switch]$DryRun,
 
@@ -61,7 +61,6 @@ if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
     $script:ProjectRoot = (Get-Location).Path
 }
 $script:BOOKS_DIR = Join-Path $script:ProjectRoot 'books'
-$script:BACKUP_DIR = Join-Path $script:ProjectRoot 'backup'
 $script:DOWNLOAD_RECORDS_DIR = Join-Path $script:ProjectRoot 'downloads'
 $script:KindleDirectExtensions = @('.azw3', '.azw', '.mobi', '.pdf')
 #endregion
@@ -100,7 +99,7 @@ function Complete-StagedFile([string]$StagedPath, [string]$Destination) {
 function Invoke-SelfRepair {
     param([string]$OutputFolder = $script:BOOKS_DIR)
     $fixed = 0
-    foreach ($folder in @($OutputFolder, $script:BACKUP_DIR, $script:DOWNLOAD_RECORDS_DIR)) {
+    foreach ($folder in @($OutputFolder, $script:DOWNLOAD_RECORDS_DIR)) {
         try {
             if (-not (Test-Path -LiteralPath $folder -PathType Container)) {
                 Ensure-Directory $folder
@@ -1383,7 +1382,6 @@ function Invoke-DryRun {
     Write-Host ''
     Write-Host "Script folder: $($Script:SCRIPT_DIR)"
     Write-Host "Books folder:  $($Options.Output)"
-    Write-Host "Backup folder: $($Script:BACKUP_DIR)"
     Write-Host "Source:        $($Options.Source)"
     Write-Host "Format:        $($Options.Format)"
     Write-Host "Delay:         $($Options.Delay) ms"
@@ -1634,14 +1632,12 @@ function Invoke-DownloadWorkflow {
 
     Invoke-SelfRepair -OutputFolder $options.Output
     Ensure-Directory $options.Output
-    Ensure-Directory $Script:BACKUP_DIR
     Ensure-Directory $script:DOWNLOAD_RECORDS_DIR
 
     $options | Add-Member -NotePropertyName StartedAt -NotePropertyValue ([DateTime]::UtcNow) -Force
     $options | Add-Member -NotePropertyName Deadline -NotePropertyValue $(if ($options.MaxRuntimeMinutes -gt 0) { [DateTime]::UtcNow.AddMinutes($options.MaxRuntimeMinutes) } else { $null }) -Force
 
     Write-Success "Books folder: $($options.Output)"
-    Write-Success "Backup folder: $($Script:BACKUP_DIR)"
     if ($options.MaxRuntimeMinutes -gt 0) {
         Write-Host "Maximum runtime: $($options.MaxRuntimeMinutes) minute(s)" -ForegroundColor Gray
     } else {
@@ -3589,239 +3585,6 @@ function Search-MtpFolderForFiles {
 }
 #endregion
 
-#region Kindle backups
-function Backup-Kindle {
-    if (-not (Wait-ForKindle -TimeoutSeconds 30)) {
-        return
-    }
-
-    $Storage = Get-KindleInternalStorage
-
-    if ($null -eq $Storage) {
-        Write-Host ""
-        Write-Host "Internal Storage unavailable." -ForegroundColor Red
-
-        return
-    }
-
-    $Timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-
-    $BackupRoot = Join-Path `
-        $PcBackupFolder `
-        $Timestamp
-
-    New-Item `
-        -ItemType Directory `
-        -Path $BackupRoot `
-        -Force |
-        Out-Null
-
-    Write-Host ""
-    Write-Host "============================================================" `
-        -ForegroundColor Cyan
-
-    Write-Host " KINDLE BACKUP" `
-        -ForegroundColor Cyan
-
-    Write-Host "============================================================" `
-        -ForegroundColor Cyan
-
-    Write-Host ""
-    Write-Host "Backup destination:" -ForegroundColor Gray
-    Write-Host "  $BackupRoot" -ForegroundColor Cyan
-
-    Write-Host ""
-    Write-Host "The backup copies accessible files exposed by Windows MTP."
-    Write-Host "The folder structure will be recreated on the PC."
-    Write-Host ""
-
-    $Confirm = Read-Host "Start backup? (Y/N)"
-
-    if ($Confirm -notmatch "^[Yy]$") {
-        Write-Host ""
-        Write-Host "Backup cancelled." -ForegroundColor Yellow
-
-        return
-    }
-
-    $Stats = @{
-        Files   = 0
-        Folders = 0
-        Failed  = 0
-        Bytes   = [double]0
-    }
-
-    Write-Host ""
-    Write-Host "Starting backup..." -ForegroundColor Yellow
-    Write-Host ""
-
-    try {
-        Backup-MtpFolder `
-            -Folder $Storage `
-            -LogicalPath $(Get-KindleStoragePath) `
-            -Destination $BackupRoot `
-            -Stats $Stats
-
-        Write-Host ""
-        Write-Host "============================================================" `
-            -ForegroundColor Green
-
-        Write-Host " BACKUP COMPLETE" `
-            -ForegroundColor Green
-
-        Write-Host "============================================================" `
-            -ForegroundColor Green
-
-        Write-Host ""
-
-        Write-Host "Files copied : $($Stats.Files)"
-        Write-Host "Folders      : $($Stats.Folders)"
-        Write-Host "Failed       : $($Stats.Failed)"
-        Write-Host "Known size   : $(Format-Size $Stats.Bytes)"
-
-        Write-Host ""
-        Write-Host "Backup folder:" -ForegroundColor Gray
-        Write-Host "  $BackupRoot" -ForegroundColor Green
-    }
-    catch {
-        Write-Host ""
-        Write-Host "Backup failed:" -ForegroundColor Red
-        Write-Host $_.Exception.Message -ForegroundColor Red
-    }
-}
-
-function Backup-MtpFolder {
-    param(
-        [Parameter(Mandatory)]
-        $Folder,
-
-        [Parameter(Mandatory)]
-        [string]$LogicalPath,
-
-        [Parameter(Mandatory)]
-        [string]$Destination,
-
-        [Parameter(Mandatory)]
-        [hashtable]$Stats
-    )
-
-    if (-not (Test-Path -LiteralPath $Destination)) {
-        New-Item `
-            -ItemType Directory `
-            -Path $Destination `
-            -Force |
-            Out-Null
-    }
-
-    foreach ($Item in Get-MtpItems $Folder) {
-        try {
-            $Name = [string]$Item.Name
-
-            if ($Item.IsFolder) {
-                $Stats.Folders++
-
-                $ChildDestination = Join-Path `
-                    $Destination `
-                    $Name
-
-                if (-not (Test-Path -LiteralPath $ChildDestination)) {
-                    New-Item `
-                        -ItemType Directory `
-                        -Path $ChildDestination `
-                        -Force |
-                        Out-Null
-                }
-
-                Backup-MtpFolder `
-                    -Folder $Item.GetFolder() `
-                    -LogicalPath "$LogicalPath\$Name" `
-                    -Destination $ChildDestination `
-                    -Stats $Stats
-
-                continue
-            }
-
-            $Stats.Files++
-
-            Write-Host "Copying: $LogicalPath\$Name"
-
-            $PcFolder = $Shell.Namespace($Destination)
-
-            if ($null -eq $PcFolder) {
-                throw "Could not access backup destination."
-            }
-
-            $DestinationFile = Join-Path `
-                $Destination `
-                $Name
-
-            if (Test-Path -LiteralPath $DestinationFile) {
-                $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($Name)
-                $Extension = [System.IO.Path]::GetExtension($Name)
-
-                $Counter = 1
-
-                do {
-                    $AlternativeName = `
-                        "{0}_{1}{2}" -f `
-                        $BaseName,
-                        $Counter,
-                        $Extension
-
-                    $DestinationFile = Join-Path `
-                        $Destination `
-                        $AlternativeName
-
-                    $Counter++
-                } while (
-                    Test-Path -LiteralPath $DestinationFile
-                )
-            }
-
-            $PcFolder.CopyHere(
-                $Item,
-                $CopyFlags
-            )
-
-            $Size = Get-MtpFileSize `
-                -Documents $Folder `
-                -Item $Item
-
-            if ($Size -gt 0) {
-                $Stats.Bytes += $Size
-            }
-
-            $Verified = Wait-ForPCFile `
-                -Path $DestinationFile `
-                -TimeoutSeconds $VerificationTimeoutSeconds
-
-            if ($Verified) {
-                Write-Host "  Verified." `
-                    -ForegroundColor Green
-            }
-            else {
-                Write-Host "  Could not verify." `
-                    -ForegroundColor Yellow
-
-                $Stats.Failed++
-            }
-
-            Start-Sleep -Seconds $BackupCopyWaitSeconds
-        }
-        catch {
-            $Stats.Failed++
-
-            Write-Host ""
-            Write-Host "FAILED: $LogicalPath\$($Item.Name)" `
-                -ForegroundColor Red
-
-            Write-Host $_.Exception.Message `
-                -ForegroundColor Red
-        }
-    }
-}
-#endregion
-
 #region Kindle information and storage
 function Show-KindleStorage {
     Write-Host ""
@@ -4180,8 +3943,6 @@ function Invoke-KindleTransfer {
 
     $PcBooksFolder = $script:BOOKS_DIR
 
-    $PcBackupFolder = $script:BACKUP_DIR
-
     $SupportedExtensions = @(
         ".epub",
         ".pdf",
@@ -4204,8 +3965,6 @@ function Invoke-KindleTransfer {
 
     $VerificationIntervalMs     = 750
 
-    $BackupCopyWaitSeconds = 2
-
     $Shell = New-Object -ComObject Shell.Application
 
     foreach ($folder in @($PcBooksFolder, $PcBackupFolder)) { Ensure-Directory $folder }
@@ -4214,7 +3973,6 @@ function Invoke-KindleTransfer {
         @{ Label = 'Send books to Kindle'; Action = { Copy-PCToKindle } }
         @{ Label = 'Copy books from Kindle'; Action = { Copy-KindleToPC } }
         @{ Label = 'Browse Kindle files'; Action = { Browse-Kindle } }
-        @{ Label = 'Backup Kindle'; Action = { Backup-Kindle } }
         @{ Label = 'Kindle information and storage'; Action = {
             Show-KindleInfo
             if (Test-KindleConnection) { Show-KindleStorage }
